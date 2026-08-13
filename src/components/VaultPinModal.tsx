@@ -1,11 +1,12 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Lock, KeyRound, Eye, EyeOff, X, Check, ShieldCheck, AlertCircle } from "lucide-react";
-import { isPinConfigured, savePin, verifyPin } from "../utils/cryptoVault";
+import { isPinConfigured, savePin, verifyPin, removePin } from "../utils/cryptoVault";
+import { haptics } from "../utils/haptics";
 
 interface VaultPinModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess?: () => void;
 }
 
 export const VaultPinModal: React.FC<VaultPinModalProps> = ({
@@ -13,7 +14,10 @@ export const VaultPinModal: React.FC<VaultPinModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const isConfigured = isPinConfigured();
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [forceNewPinMode, setForceNewPinMode] = useState(false);
+
+  const isConfigured = isPinConfigured() && !forceNewPinMode;
 
   const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
@@ -26,6 +30,20 @@ export const VaultPinModal: React.FC<VaultPinModalProps> = ({
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Reset form inputs & messages whenever modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentPin("");
+      setNewPin("");
+      setConfirmPin("");
+      setErrorMsg("");
+      setSuccessMsg("");
+      setShowCurrentPin(false);
+      setShowNewPin(false);
+      setShowConfirmPin(false);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -44,7 +62,17 @@ export const VaultPinModal: React.FC<VaultPinModalProps> = ({
       const isCurrentValid = await verifyPin(currentPin);
       if (!isCurrentValid) {
         setIsSubmitting(false);
-        setErrorMsg("Current passcode is incorrect.");
+        haptics.error();
+        const nextAttempts = failedAttempts + 1;
+        setFailedAttempts(nextAttempts);
+        setCurrentPin("");
+        if (nextAttempts >= 11) {
+          removePin();
+          setForceNewPinMode(true);
+          setErrorMsg("You have attempted 11 wrong passwords. Please create a new password.");
+        } else {
+          setErrorMsg(`Current passcode is incorrect (${nextAttempts}/11 attempts).`);
+        }
         return;
       }
     }
@@ -52,12 +80,14 @@ export const VaultPinModal: React.FC<VaultPinModalProps> = ({
     // Validate new PIN
     if (!/^\d{4,8}$/.test(newPin)) {
       setIsSubmitting(false);
+      haptics.error();
       setErrorMsg("Passcode must be 4 to 8 numeric digits.");
       return;
     }
 
     if (newPin !== confirmPin) {
       setIsSubmitting(false);
+      haptics.error();
       setErrorMsg("New passcodes do not match.");
       return;
     }
@@ -67,13 +97,14 @@ export const VaultPinModal: React.FC<VaultPinModalProps> = ({
     setIsSubmitting(false);
 
     if (saved) {
+      haptics.success();
       setSuccessMsg(
         isConfigured
           ? "Passcode changed successfully!"
           : "Passcode configured successfully!"
       );
       setTimeout(() => {
-        onSuccess();
+        if (onSuccess) onSuccess();
         onClose();
       }, 1000);
     } else {
@@ -82,11 +113,17 @@ export const VaultPinModal: React.FC<VaultPinModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 text-left relative">
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-[200] bg-slate-950/90 backdrop-blur-3xl flex items-center justify-center p-4 animate-fade-in sm:p-6 min-h-screen w-screen overflow-y-auto"
+    >
+      <div className="bg-slate-900/95 border border-slate-800 rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl space-y-5 text-left relative my-auto ring-1 ring-slate-800/80 shadow-indigo-950/50 backdrop-blur-md">
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 cursor-pointer"
+          className="absolute top-4 right-4 p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 cursor-pointer transition-colors"
+          title="Close Passcode Modal"
         >
           <X className="w-5 h-5" />
         </button>

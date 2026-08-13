@@ -1,7 +1,9 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   X,
   RotateCw,
+  RotateCcw,
   FlipHorizontal,
   Sliders,
   Crop,
@@ -18,8 +20,16 @@ import {
   Type,
   Trash2,
   Plus,
+  AlertCircle,
+  Pencil,
+  ChevronLeft,
+  Sun,
+  Smile,
 } from "lucide-react";
-import { Photo, PhotoEditState, TextOverlay } from "../types";
+import { Photo, PhotoEditState, TextOverlay, StickerOverlay } from "../types";
+import { haptics } from "../utils/haptics";
+import { getEditedMediaTitle } from "../utils/mediaTitle";
+import { EditingToolDock, EditorTool } from "./EditingToolDock";
 
 interface PhotoEditorModalProps {
   photo: Photo;
@@ -27,21 +37,32 @@ interface PhotoEditorModalProps {
   onClose: () => void;
 }
 
-export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
+export interface PhotoEditorRef {
+  handleBack: () => boolean;
+}
+
+export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps>(({
   photo,
   onSave,
   onClose,
-}) => {
+}, ref) => {
   const [showSaveOptions, setShowSaveOptions] = useState(false);
-  const [activeTab, setActiveTab] = useState<
-    "adjust" | "crop" | "filter" | "magic_eraser" | "text"
-  >("adjust");
+  const [showDiscardConfirmModal, setShowDiscardConfirmModal] = useState(false);
+  
+  // Single active tool state
+  const [activeTool, setActiveTool] = useState<EditorTool | null>("none");
+
+  // Selected adjustment parameter for single-slider focus
+  const [selectedAdjustment, setSelectedAdjustment] = useState<
+    "brightness" | "contrast" | "saturation" | "warmth" | "vignette" | "eraser"
+  >("brightness");
 
   // Photo image source state with undo history
   const [currentPhotoUrl, setCurrentPhotoUrl] = useState<string>(
     photo.highResUrl || photo.url
   );
   const [urlHistory, setUrlHistory] = useState<string[]>([]);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   // Adjustments state
   const [brightness, setBrightness] = useState(
@@ -64,6 +85,128 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
     photo.editedState?.textOverlays || []
   );
   const [activeTextId, setActiveTextId] = useState<string | null>(null);
+
+  // Sticker Overlays State
+  const [stickerOverlays, setStickerOverlays] = useState<StickerOverlay[]>(
+    photo.editedState?.stickerOverlays || []
+  );
+  const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
+
+  // Sticker Overlay Drag Ref
+  const stickerDragRef = useRef<{
+    isDragging: boolean;
+    stickerId: string | null;
+    startX: number;
+    startY: number;
+    initialX: number;
+    initialY: number;
+  }>({
+    isDragging: false,
+    stickerId: null,
+    startX: 0,
+    startY: 0,
+    initialX: 0.5,
+    initialY: 0.5,
+  });
+
+  // Sticker Pointer Handlers
+  const handleStickerPointerDown = (
+    e: React.PointerEvent,
+    stickerItem: StickerOverlay
+  ) => {
+    e.stopPropagation();
+    setActiveStickerId(stickerItem.id);
+    if (activeTool !== "stickers") setActiveTool("stickers");
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
+    stickerDragRef.current = {
+      isDragging: true,
+      stickerId: stickerItem.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: stickerItem.xNormalized,
+      initialY: stickerItem.yNormalized,
+    };
+  };
+
+  const handleStickerPointerMove = (e: React.PointerEvent, stickerId: string) => {
+    if (
+      !stickerDragRef.current.isDragging ||
+      stickerDragRef.current.stickerId !== stickerId ||
+      !imageContainerRef.current
+    )
+      return;
+
+    const rect = imageContainerRef.current.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const dx = (e.clientX - stickerDragRef.current.startX) / rect.width;
+    const dy = (e.clientY - stickerDragRef.current.startY) / rect.height;
+
+    const newX = Math.max(0.05, Math.min(0.95, stickerDragRef.current.initialX + dx));
+    const newY = Math.max(0.05, Math.min(0.95, stickerDragRef.current.initialY + dy));
+
+    setStickerOverlays((prev) =>
+      prev.map((item) =>
+        item.id === stickerId
+          ? { ...item, xNormalized: newX, yNormalized: newY }
+          : item
+      )
+    );
+  };
+
+  const handleStickerPointerUp = (e: React.PointerEvent) => {
+    if (stickerDragRef.current.isDragging) {
+      stickerDragRef.current.isDragging = false;
+      stickerDragRef.current.stickerId = null;
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+  };
+
+  // Compute unsaved changes status
+  const isDirty =
+    brightness !== (photo.editedState?.brightness || 0) ||
+    contrast !== (photo.editedState?.contrast || 0) ||
+    saturation !== (photo.editedState?.saturation || 0) ||
+    warmth !== (photo.editedState?.warmth || 0) ||
+    vignette !== (photo.editedState?.vignette || 0) ||
+    filter !== (photo.editedState?.filter || "none") ||
+    rotation !== (photo.editedState?.rotation || 0) ||
+    flipH !== (photo.editedState?.flipH || false) ||
+    textOverlays.length !== (photo.editedState?.textOverlays?.length || 0) ||
+    stickerOverlays.length !== (photo.editedState?.stickerOverlays?.length || 0) ||
+    urlHistory.length > 0;
+
+  const handleAttemptClose = () => {
+    if (showDiscardConfirmModal) {
+      setShowDiscardConfirmModal(false);
+      return;
+    }
+    if (showSaveOptions) {
+      setShowSaveOptions(false);
+    }
+    setShowDiscardConfirmModal(true);
+  };
+
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (showDiscardConfirmModal) {
+        setShowDiscardConfirmModal(false);
+        return true;
+      }
+      if (showSaveOptions) {
+        setShowSaveOptions(false);
+        return true;
+      }
+      setShowDiscardConfirmModal(true);
+      return true;
+    },
+  }));
 
   // Text Overlay Drag Ref
   const textDragRef = useRef<{
@@ -268,6 +411,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
   ];
 
   const applyCropRatioPreset = (ratioId: string) => {
+    haptics.selection();
     setSelectedCropRatio(ratioId);
     const item = cropRatiosList.find((r) => r.id === ratioId);
 
@@ -455,7 +599,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
   ) => {
     e.stopPropagation();
     setActiveTextId(overlay.id);
-    if (activeTab !== "text") setActiveTab("text");
+    if (activeTool !== "text") setActiveTool("text");
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -571,13 +715,13 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
   };
 
   const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeTab !== "magic_eraser") return;
+    if (activeTool !== "adjust" || selectedAdjustment !== "eraser") return;
     setIsMouseDown(true);
     addBrushPoint(e.clientX, e.clientY);
   };
 
   const handleStagePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeTab !== "magic_eraser" || !isMouseDown) return;
+    if (activeTool !== "adjust" || selectedAdjustment !== "eraser" || !isMouseDown) return;
     addBrushPoint(e.clientX, e.clientY);
   };
 
@@ -733,10 +877,10 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
           Math.min(canvas.width, canvas.height) * 0.3,
           canvas.width / 2,
           canvas.height / 2,
-          Math.max(canvas.width, canvas.height) * 0.7
+          Math.max(canvas.width, canvas.height) * 0.75
         );
         grad.addColorStop(0, "rgba(0,0,0,0)");
-        grad.addColorStop(1, `rgba(0,0,0,${vignette / 100})`);
+        grad.addColorStop(1, `rgba(0,0,0,${Math.min(1, vignette / 50)})`);
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
@@ -806,11 +950,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
       textOverlays,
     };
 
-    const updatedTitle = isCopy
-      ? `${photo.title} (Edited)`
-      : photo.title.includes("(Edited)")
-      ? photo.title
-      : `${photo.title} (Edited)`;
+    const updatedTitle = getEditedMediaTitle(photo.title);
 
     const updatedPhoto: Photo = {
       ...photo,
@@ -819,32 +959,50 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
       url: finalUrl,
       highResUrl: finalUrl,
       editedState: updatedEditState,
-      date: isCopy ? new Date().toISOString() : photo.date,
+      date: photo.date, // Preserve original date so it stays in place in timeline
     };
 
+    // Push pre-save image into history so user can Undo if desired!
+    setUrlHistory((prev) => [...prev, currentPhotoUrl]);
+    setCurrentPhotoUrl(finalUrl);
+
+    // Reset temporary sliders since changes are baked into finalUrl
+    setBrightness(0);
+    setContrast(0);
+    setSaturation(0);
+    setWarmth(0);
+    setVignette(0);
+    setFilter("none");
+    setRotation(0);
+    setFlipH(false);
+    setEraserPoints([]);
+    setTextOverlays([]);
+    setStickerOverlays([]);
+
+    haptics.success();
+    setSaveNotice(isCopy ? "Saved as new copy!" : "Saved photo changes!");
+    setTimeout(() => setSaveNotice(null), 3000);
+
     onSave(updatedPhoto, isCopy);
-    onClose();
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between overflow-hidden animate-fade-in select-none">
+    <div className="fixed inset-0 z-[105] bg-slate-950 flex flex-col justify-between overflow-hidden animate-fade-in select-none">
       {/* Top Header */}
       <div className="p-3 sm:p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
-            onClick={onClose}
+            onClick={handleAttemptClose}
             className="p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 cursor-pointer"
+            title="Close Editor"
           >
             <X className="w-5 h-5" />
           </button>
           <div>
-            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-              <span>Pro Photo Studio</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                AI & Canvas Engine
-              </span>
+            <h3 className="text-sm font-semibold tracking-wide text-slate-100 flex items-center gap-2">
+              <Wand2 className="w-4 h-4 text-indigo-400" />
+              <span>Photo Editor</span>
             </h3>
-            <p className="text-[11px] text-slate-400">{photo.title}</p>
           </div>
         </div>
 
@@ -852,13 +1010,29 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
           {urlHistory.length > 0 && (
             <button
               onClick={handleUndo}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1 hover:text-white cursor-pointer"
-              title="Undo Last Action"
+              className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer transition-all border border-slate-700/60"
+              title="Undo Previous Action"
+              aria-label="Undo Previous Action"
             >
-              <Undo className="w-3.5 h-3.5" />
-              <span>Undo</span>
+              <Undo className="w-4 h-4" />
             </button>
           )}
+
+          <button
+            onClick={() => {
+              haptics.light();
+              setActiveTool((curr) => (curr === null ? "none" : curr === "none" ? null : "none"));
+            }}
+            className={`p-2.5 rounded-xl transition-all cursor-pointer border ${
+              activeTool !== null
+                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-sm"
+                : "bg-slate-800 hover:bg-slate-750 text-slate-300 border-slate-700/60"
+            }`}
+            title="Toggle Editing Tools"
+            aria-label="Toggle Editing Tools"
+          >
+            <Pencil className="w-4 h-4" />
+          </button>
 
           <button
             onClick={() => {
@@ -874,19 +1048,26 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
               setCurrentPhotoUrl(photo.highResUrl || photo.url);
               setUrlHistory([]);
               setCropBox({ x: 10, y: 10, width: 80, height: 80 });
+              setTextOverlays([]);
+              setActiveTextId(null);
+              setStickerOverlays([]);
+              setActiveStickerId(null);
             }}
-            className="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:text-white cursor-pointer"
+            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer transition-all border border-slate-700/60"
+            title="Revert All Edits"
+            aria-label="Revert All Edits"
           >
-            Revert
+            <RotateCcw className="w-4 h-4" />
           </button>
 
           <div className="relative">
             <button
               onClick={() => setShowSaveOptions(!showSaveOptions)}
-              className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md shadow-indigo-600/30 border border-indigo-400/40"
+              className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-md shadow-indigo-600/30 border border-indigo-400/40 transition-all"
+              title="Save Photo Options"
+              aria-label="Save Photo Options"
             >
-              <Save className="w-3.5 h-3.5" />
-              <span>Save Photo</span>
+              <Save className="w-4 h-4" />
             </button>
 
             {showSaveOptions && (
@@ -924,7 +1105,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
       {/* Main Preview Stage */}
       <div className="flex-1 relative bg-black flex items-center justify-center p-4 sm:p-6 overflow-hidden">
         {/* Instruction Badge when AI Eraser active */}
-        {activeTab === "magic_eraser" && (
+        {activeTool === "adjust" && selectedAdjustment === "eraser" && (
           <div className="absolute top-4 z-20 px-4 py-2 rounded-2xl bg-slate-900/90 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-2 shadow-xl backdrop-blur-md animate-fade-in">
             <Wand2 className="w-4 h-4 text-amber-400 animate-spin-slow" />
             <span>
@@ -936,7 +1117,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
         )}
 
         {/* Instruction Badge when Crop active */}
-        {activeTab === "crop" && (
+        {activeTool === "crop" && (
           <div className="absolute top-4 z-20 px-4 py-2 rounded-2xl bg-slate-900/90 border border-indigo-500/40 text-indigo-300 text-xs font-semibold flex items-center gap-2 shadow-xl backdrop-blur-md animate-fade-in">
             <Crop className="w-4 h-4 text-indigo-400" />
             <span>Drag crop handles or box, choose aspect ratio, then click "Apply Crop".</span>
@@ -944,6 +1125,13 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
         )}
 
         {/* Toast Banners */}
+        {saveNotice && (
+          <div className="absolute top-4 sm:top-6 z-40 px-4 py-2.5 rounded-full bg-slate-900/95 border border-emerald-500/50 text-emerald-300 text-xs font-bold flex items-center gap-2 shadow-2xl backdrop-blur-md animate-fade-in">
+            <Check className="w-4 h-4 text-emerald-400" />
+            <span>{saveNotice}</span>
+          </div>
+        )}
+
         {eraseSuccessMsg && (
           <div className="absolute top-16 z-30 px-4 py-2 rounded-2xl bg-emerald-500/90 text-white text-xs font-bold flex items-center gap-2 shadow-2xl backdrop-blur-md animate-bounce">
             <CheckCircle2 className="w-4 h-4" />
@@ -964,7 +1152,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
           onPointerMove={handleStagePointerMove}
           onPointerUp={handleStagePointerUp}
           className={`relative max-h-full max-w-full transition-transform duration-300 flex items-center justify-center ${
-            activeTab === "magic_eraser" ? "cursor-crosshair" : ""
+            activeTool === "adjust" && selectedAdjustment === "eraser" ? "cursor-crosshair" : ""
           }`}
           style={{
             transform: `rotate(${rotation}deg) scaleX(${flipH ? -1 : 1})`,
@@ -974,14 +1162,24 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
             ref={imageElementRef}
             src={currentPhotoUrl}
             alt="Editing"
-            className="max-h-[62vh] max-w-full object-contain rounded-xl shadow-2xl pointer-events-none"
+            className="max-h-[62vh] max-w-full object-contain rounded-none shadow-2xl pointer-events-none"
             style={{
               filter: getCssFilter(),
             }}
           />
 
+          {/* Live Vignette Effect Overlay */}
+          {vignette > 0 && (
+            <div
+              className="absolute inset-0 rounded-none pointer-events-none transition-opacity duration-150 z-10 overflow-hidden"
+              style={{
+                background: `radial-gradient(ellipse at center, transparent 35%, rgba(0, 0, 0, ${Math.min(1, vignette / 50)}))`,
+              }}
+            />
+          )}
+
           {/* Interactive Crop Box Overlay */}
-          {activeTab === "crop" && (
+          {activeTool === "crop" && (
             <div className="absolute inset-0 pointer-events-auto">
               {/* Darkened Outer Mask Area */}
               <div
@@ -1105,7 +1303,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
           )}
 
           {/* AI Object Eraser Brushed Mask Spots */}
-          {activeTab === "magic_eraser" &&
+          {activeTool === "adjust" && selectedAdjustment === "eraser" &&
             eraserPoints.map((pt, idx) => (
               <div
                 key={idx}
@@ -1134,7 +1332,7 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
                 onClick={(e) => {
                   e.stopPropagation();
                   setActiveTextId(overlay.id);
-                  if (activeTab !== "text") setActiveTab("text");
+                  if (activeTool !== "text") setActiveTool("text");
                 }}
                 onPointerDown={(e) => handleTextPointerDown(e, overlay)}
                 onPointerMove={(e) => handleTextPointerMove(e, overlay.id)}
@@ -1234,443 +1432,542 @@ export const PhotoEditorModal: React.FC<PhotoEditorModalProps> = ({
               </div>
             );
           })}
+          {/* Interactive Sticker Overlays on Stage */}
+          {stickerOverlays.map((stickerItem) => {
+            const isSelected = activeStickerId === stickerItem.id;
+            return (
+              <div
+                key={stickerItem.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveStickerId(stickerItem.id);
+                  if (activeTool !== "stickers") setActiveTool("stickers");
+                }}
+                onPointerDown={(e) => handleStickerPointerDown(e, stickerItem)}
+                onPointerMove={(e) => handleStickerPointerMove(e, stickerItem.id)}
+                onPointerUp={handleStickerPointerUp}
+                onPointerCancel={handleStickerPointerUp}
+                style={{
+                  left: `${stickerItem.xNormalized * 100}%`,
+                  top: `${stickerItem.yNormalized * 100}%`,
+                  transform: `translate(-50%, -50%) scale(${stickerItem.scale}) rotate(${stickerItem.rotation}deg)`,
+                }}
+                className={`absolute pointer-events-auto select-none cursor-grab active:cursor-grabbing z-30 transition-shadow touch-none ${
+                  isSelected
+                    ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-black/40 rounded-2xl p-1 bg-black/20 backdrop-blur-sm"
+                    : "p-1"
+                }`}
+              >
+                <div className="text-4xl sm:text-5xl drop-shadow-lg leading-none">
+                  {stickerItem.sticker}
+                </div>
+
+                {isSelected && (
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-xl p-1 shadow-2xl z-40">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) =>
+                          prev.map((s) => (s.id === stickerItem.id ? { ...s, scale: Math.max(0.4, s.scale - 0.15) } : s))
+                        );
+                      }}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                      title="Decrease Size"
+                    >
+                      A-
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) =>
+                          prev.map((s) => (s.id === stickerItem.id ? { ...s, scale: Math.min(3, s.scale + 0.15) } : s))
+                        );
+                      }}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                      title="Increase Size"
+                    >
+                      A+
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) =>
+                          prev.map((s) => (s.id === stickerItem.id ? { ...s, rotation: (s.rotation + 90) % 360 } : s))
+                        );
+                      }}
+                      className="p-1 hover:bg-slate-800 text-slate-300 rounded-lg cursor-pointer"
+                      title="Rotate Sticker"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) => prev.filter((s) => s.id !== stickerItem.id));
+                        setActiveStickerId(null);
+                      }}
+                      className="p-1 hover:bg-rose-500/20 text-rose-400 rounded-lg cursor-pointer"
+                      title="Delete Sticker"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Bottom Tool Editing Panels */}
-      <div className="bg-slate-900 border-t border-slate-800 p-3 sm:p-4 space-y-4">
-        {/* Tab Selection Row */}
-        <div className="flex items-center justify-center gap-1 sm:gap-2 max-w-lg mx-auto bg-slate-950 p-1.5 rounded-2xl border border-slate-800/80">
-          <button
-            onClick={() => setActiveTab("adjust")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "adjust"
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>Adjust</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("crop")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "crop"
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Crop className="w-3.5 h-3.5" />
-            <span>Crop</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("filter")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "filter"
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Palette className="w-3.5 h-3.5" />
-            <span>Filters</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("text")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "text"
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Type className="w-3.5 h-3.5" />
-            <span>Text</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("magic_eraser")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "magic_eraser"
-                ? "bg-gradient-to-r from-pink-600 to-indigo-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Wand2 className="w-3.5 h-3.5 text-amber-300" />
-            <span>AI Eraser</span>
-          </button>
-        </div>
-
-        {/* Tab Controls Content */}
-        <div className="max-w-3xl mx-auto min-h-[110px] flex items-center justify-center">
-          {/* Adjustments Tab */}
-          {activeTab === "adjust" && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full">
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-slate-300 font-semibold">
-                  <span>Brightness</span>
-                  <span>{brightness}</span>
-                </div>
-                <input
-                  type="range"
-                  min={-50}
-                  max={50}
-                  value={brightness}
-                  onChange={(e) => setBrightness(parseInt(e.target.value))}
-                  className="w-full accent-indigo-500 cursor-pointer"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-slate-300 font-semibold">
-                  <span>Contrast</span>
-                  <span>{contrast}</span>
-                </div>
-                <input
-                  type="range"
-                  min={-50}
-                  max={50}
-                  value={contrast}
-                  onChange={(e) => setContrast(parseInt(e.target.value))}
-                  className="w-full accent-indigo-500 cursor-pointer"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-slate-300 font-semibold">
-                  <span>Saturation</span>
-                  <span>{saturation}</span>
-                </div>
-                <input
-                  type="range"
-                  min={-50}
-                  max={50}
-                  value={saturation}
-                  onChange={(e) => setSaturation(parseInt(e.target.value))}
-                  className="w-full accent-indigo-500 cursor-pointer"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-slate-300 font-semibold">
-                  <span>Warmth / Tone</span>
-                  <span>{warmth}</span>
-                </div>
-                <input
-                  type="range"
-                  min={-50}
-                  max={50}
-                  value={warmth}
-                  onChange={(e) => setWarmth(parseInt(e.target.value))}
-                  className="w-full accent-indigo-500 cursor-pointer"
-                />
-              </div>
+      {/* Bottom Floating Area for Editing Dock & Contextual Tool Interfaces */}
+      <div className="bg-slate-900/95 border-t border-slate-800/90 p-3 sm:p-4 shadow-2xl z-20 min-h-[130px] flex flex-col justify-center backdrop-blur-md">
+        <AnimatePresence mode="wait">
+          {activeTool === "none" && (
+            <div key="dock-panel" className="w-full flex justify-center py-1">
+              <EditingToolDock activeTool={activeTool} onSelectTool={setActiveTool} />
             </div>
           )}
 
-          {/* Crop & Transform Tab */}
-          {activeTab === "crop" && (
-            <div className="flex flex-col items-center gap-3 w-full">
-              {/* Aspect Ratio Buttons */}
-              <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none w-full justify-start sm:justify-center">
-                {cropRatiosList.map((r) => (
-                  <button
-                    key={r.id}
-                    onClick={() => applyCropRatioPreset(r.id)}
-                    className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
-                      selectedCropRatio === r.id
-                        ? "bg-indigo-600 text-white border-indigo-400 shadow-md"
-                        : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
-                    }`}
-                  >
-                    {r.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Crop Controls Row */}
-              <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
-                <button
-                  onClick={performCanvasCrop}
-                  disabled={isApplyingCrop}
-                  className="px-5 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-indigo-600/30"
-                >
-                  <Scissors className="w-4 h-4" />
-                  <span>{isApplyingCrop ? "Cropping Image..." : "Apply Crop"}</span>
-                </button>
-
-                <button
-                  onClick={() => setRotation((r) => (r + 90) % 360)}
-                  className="px-4 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 cursor-pointer"
-                >
-                  <RotateCw className="w-4 h-4" />
-                  <span>Rotate 90°</span>
-                </button>
-
-                <button
-                  onClick={() => setFlipH(!flipH)}
-                  className="px-4 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 cursor-pointer"
-                >
-                  <FlipHorizontal className="w-4 h-4" />
-                  <span>Flip Horizontal</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Filters Tab */}
-          {activeTab === "filter" && (
-            <div className="flex gap-2.5 overflow-x-auto pb-2 scrollbar-none w-full">
-              {filtersList.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => applyPresetFilter(f.id)}
-                  className={`flex-shrink-0 px-4 py-2.5 rounded-2xl border text-xs font-bold transition-all cursor-pointer flex flex-col items-center gap-1 ${
-                    filter === f.id
-                      ? "bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30"
-                      : "bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700"
-                  }`}
-                >
-                  <span>{f.label}</span>
-                  {filter === f.id && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* AI Magic Object Eraser Tab */}
-          {activeTab === "magic_eraser" && (
-            <div className="flex flex-col items-center gap-3 w-full">
-              {/* Brush Size Controls */}
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-medium text-slate-400">Brush Size:</span>
-                <div className="flex items-center gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                  {[
-                    { label: "Small", size: 20 },
-                    { label: "Medium", size: 35 },
-                    { label: "Large", size: 55 },
-                  ].map((b) => (
-                    <button
-                      key={b.size}
-                      onClick={() => setEraserBrushSize(b.size)}
-                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                        eraserBrushSize === b.size
-                          ? "bg-pink-600 text-white"
-                          : "text-slate-400 hover:text-white"
-                      }`}
-                    >
-                      {b.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Action Buttons Row */}
-              <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
-                {/* Erase Selected Mask Button */}
-                <button
-                  onClick={() => performAIErase()}
-                  disabled={eraserPoints.length === 0 || isErasingWithAI}
-                  className={`px-5 py-2 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg ${
-                    eraserPoints.length > 0 && !isErasingWithAI
-                      ? "bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white shadow-pink-600/30 animate-pulse"
-                      : "bg-slate-800 text-slate-500 opacity-60 cursor-not-allowed"
-                  }`}
-                >
-                  <Wand2 className="w-4 h-4 text-amber-300" />
-                  <span>
-                    {isErasingWithAI
-                      ? "Erasing Object with AI..."
-                      : `Erase Brushed Area (${eraserPoints.length})`}
-                  </span>
-                </button>
-
-                {/* Auto-detect Blemish Eraser preset */}
+          {activeTool !== "none" && activeTool !== null && (
+            <motion.div
+              key={activeTool}
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              className="max-w-3xl mx-auto w-full space-y-3"
+            >
+              {/* Tool Navigation Header */}
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
                 <button
                   onClick={() => {
-                    const presetSpot = [
-                      { x: 50, y: 50, size: 40 },
-                      { x: 48, y: 52, size: 30 },
-                    ];
-                    performAIErase(presetSpot);
+                    haptics.light();
+                    setActiveTool("none");
                   }}
-                  disabled={isErasingWithAI}
-                  className="px-4 py-2 rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer border border-slate-700/60 transition-all active:scale-95"
+                  title="Return to Editing Tools"
+                  aria-label="Back to Editing Tools"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Auto-Erase Blemish</span>
+                  <ChevronLeft className="w-4 h-4 text-indigo-400" />
+                  <span>Tools</span>
                 </button>
 
-                {/* Clear Mask */}
-                {eraserPoints.length > 0 && (
-                  <button
-                    onClick={() => setEraserPoints([])}
-                    className="px-3 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-medium cursor-pointer"
-                  >
-                    Clear Mask
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+                <span className="text-xs font-bold text-slate-200 tracking-wide uppercase">
+                  {activeTool === "adjust" && "Adjustments"}
+                  {activeTool === "crop" && "Crop & Aspect"}
+                  {activeTool === "filter" && "Filters"}
+                  {activeTool === "text" && "Text Overlay"}
+                  {activeTool === "stickers" && "Stickers"}
+                </span>
 
-          {/* Text Tool Control Panel */}
-          {activeTab === "text" && (
-            <div className="flex flex-col gap-3 w-full max-w-xl">
-              {/* Add Text & Active Text Input Row */}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    const newOverlay: TextOverlay = {
-                      id: `text-${Date.now()}`,
-                      text: "Sample Text",
-                      xNormalized: 0.5,
-                      yNormalized: 0.5,
-                      scale: 1,
-                      rotation: 0,
-                      fontFamily: "sans",
-                      color: "#ffffff",
-                      opacity: 1,
-                      alignment: "center",
-                      style: "shadow",
-                      bgColor: "#000000",
-                    };
-                    setTextOverlays((prev) => [...prev, newOverlay]);
-                    setActiveTextId(newOverlay.id);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add Text</span>
-                </button>
-
-                {activeTextId && (
-                  <input
-                    type="text"
-                    value={
-                      textOverlays.find((t) => t.id === activeTextId)?.text || ""
-                    }
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setTextOverlays((prev) =>
-                        prev.map((t) =>
-                          t.id === activeTextId ? { ...t, text: val } : t
-                        )
-                      );
-                    }}
-                    placeholder="Type text here..."
-                    className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-slate-100 focus:outline-none focus:border-indigo-500"
-                  />
-                )}
+                <div className="w-16" /> {/* Spacer to balance layout */}
               </div>
 
-              {/* Font Family & Style Options */}
-              {activeTextId && (
-                <div className="space-y-2">
-                  {/* Font choices with live preview */}
-                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-                    {[
-                      { id: "sans", label: "Sans", fontClass: "font-sans" },
-                      { id: "serif", label: "Serif", fontClass: "font-serif" },
-                      { id: "display", label: "Display", fontClass: "font-black uppercase tracking-wider" },
-                      { id: "script", label: "Script", fontClass: "font-serif italic" },
-                      { id: "mono", label: "Mono", fontClass: "font-mono" },
-                    ].map((f) => {
-                      const activeItem = textOverlays.find((t) => t.id === activeTextId);
-                      const isSel = activeItem?.fontFamily === f.id;
-                      return (
+              {/* ADJUSTMENTS INTERFACE */}
+              {activeTool === "adjust" && (
+                <div className="space-y-3 pt-1">
+                  {/* Parameter Pills Row */}
+                  <div className="w-full max-w-xl mx-auto overflow-x-auto touch-pan-x scrollbar-none py-1 px-2">
+                    <div className="flex items-center gap-2 min-w-max justify-start sm:justify-center mx-auto">
+                      {[
+                        { id: "brightness", label: "Brightness", val: brightness },
+                        { id: "contrast", label: "Contrast", val: contrast },
+                        { id: "saturation", label: "Saturation", val: saturation },
+                        { id: "warmth", label: "Temperature", val: warmth },
+                        { id: "vignette", label: "Vignette", val: vignette },
+                        { id: "eraser", label: "AI Eraser", val: eraserPoints.length },
+                      ].map((p) => (
                         <button
-                          key={f.id}
-                          onClick={() =>
-                            setTextOverlays((prev) =>
-                              prev.map((t) =>
-                                t.id === activeTextId
-                                  ? { ...t, fontFamily: f.id as any }
-                                  : t
-                              )
-                            )
-                          }
-                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shrink-0 ${f.fontClass} ${
-                            isSel
-                              ? "bg-indigo-600 text-white border-indigo-400"
+                          key={p.id}
+                          onClick={() => {
+                            haptics.selection();
+                            setSelectedAdjustment(p.id as any);
+                          }}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer shrink-0 border ${
+                            selectedAdjustment === p.id
+                              ? "bg-indigo-600 text-white border-indigo-400 shadow-md scale-105"
                               : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
                           }`}
                         >
-                          {f.label}
+                          <span>{p.label}</span>
+                          {p.val !== 0 && (
+                            <span className="ml-1 text-[10px] font-mono opacity-80">
+                              ({p.val > 0 ? `+${p.val}` : p.val})
+                            </span>
+                          )}
                         </button>
-                      );
-                    })}
+                      ))}
+                    </div>
                   </div>
 
-                  {/* Colors & Style Badges */}
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    {/* Color Swatches */}
-                    <div className="flex items-center gap-1.5">
-                      {["#ffffff", "#000000", "#f87171", "#fbbf24", "#34d399", "#60a5fa", "#c084fc", "#f472b6"].map((color) => {
-                        const activeItem = textOverlays.find((t) => t.id === activeTextId);
-                        const isSel = activeItem?.color === color;
-                        return (
-                          <button
-                            key={color}
-                            onClick={() =>
-                              setTextOverlays((prev) =>
-                                prev.map((t) =>
-                                  t.id === activeTextId ? { ...t, color } : t
-                                )
-                              )
-                            }
-                            style={{ backgroundColor: color }}
-                            className={`w-6 h-6 rounded-full border border-white/20 transition-transform cursor-pointer ${
-                              isSel ? "scale-125 ring-2 ring-indigo-400" : "hover:scale-110"
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
+                  {/* Single Selected Parameter Focus Slider / Eraser Controls */}
+                  {selectedAdjustment !== "eraser" ? (
+                    <div className="max-w-md mx-auto bg-slate-950 p-3 rounded-2xl border border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-200">
+                        <span className="capitalize">{selectedAdjustment}</span>
+                        <span className="font-mono text-indigo-400">
+                          {selectedAdjustment === "brightness" && (brightness > 0 ? `+${brightness}` : brightness)}
+                          {selectedAdjustment === "contrast" && (contrast > 0 ? `+${contrast}` : contrast)}
+                          {selectedAdjustment === "saturation" && (saturation > 0 ? `+${saturation}` : saturation)}
+                          {selectedAdjustment === "warmth" && (warmth > 0 ? `+${warmth}` : warmth)}
+                          {selectedAdjustment === "vignette" && vignette}
+                        </span>
+                      </div>
 
-                    {/* Style selector */}
-                    <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                      {[
-                        { id: "normal", label: "Plain" },
-                        { id: "shadow", label: "Shadow" },
-                        { id: "outline", label: "Outline" },
-                        { id: "background", label: "Badge" },
-                      ].map((st) => {
-                        const activeItem = textOverlays.find((t) => t.id === activeTextId);
-                        const isSel = activeItem?.style === st.id;
-                        return (
+                      <input
+                        type="range"
+                        min={selectedAdjustment === "vignette" ? 0 : -50}
+                        max={50}
+                        value={
+                          selectedAdjustment === "brightness"
+                            ? brightness
+                            : selectedAdjustment === "contrast"
+                            ? contrast
+                            : selectedAdjustment === "saturation"
+                            ? saturation
+                            : selectedAdjustment === "warmth"
+                            ? warmth
+                            : vignette
+                        }
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          if (selectedAdjustment === "brightness") setBrightness(val);
+                          else if (selectedAdjustment === "contrast") setContrast(val);
+                          else if (selectedAdjustment === "saturation") setSaturation(val);
+                          else if (selectedAdjustment === "warmth") setWarmth(val);
+                          else if (selectedAdjustment === "vignette") setVignette(val);
+                        }}
+                        className="w-full accent-indigo-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 max-w-md mx-auto">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-400 font-medium">Brush:</span>
+                        {[
+                          { label: "S", size: 20 },
+                          { label: "M", size: 35 },
+                          { label: "L", size: 55 },
+                        ].map((b) => (
                           <button
-                            key={st.id}
-                            onClick={() =>
-                              setTextOverlays((prev) =>
-                                prev.map((t) =>
-                                  t.id === activeTextId
-                                    ? { ...t, style: st.id as any }
-                                    : t
-                                )
-                              )
-                            }
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
-                              isSel
-                                ? "bg-indigo-600 text-white"
-                                : "text-slate-400 hover:text-slate-200"
+                            key={b.size}
+                            onClick={() => setEraserBrushSize(b.size)}
+                            className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              eraserBrushSize === b.size
+                                ? "bg-pink-600 text-white"
+                                : "bg-slate-950 text-slate-400 hover:text-white"
                             }`}
                           >
-                            {st.label}
+                            {b.label}
                           </button>
-                        );
-                      })}
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          onClick={() => performAIErase()}
+                          disabled={eraserPoints.length === 0 || isErasingWithAI}
+                          className={`px-4 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                            eraserPoints.length > 0 && !isErasingWithAI
+                              ? "bg-gradient-to-r from-pink-600 to-indigo-600 text-white shadow-md shadow-pink-600/30"
+                              : "bg-slate-800 text-slate-500 cursor-not-allowed"
+                          }`}
+                        >
+                          <Wand2 className="w-3.5 h-3.5 text-amber-300" />
+                          <span>Erase Masked ({eraserPoints.length})</span>
+                        </button>
+                        {eraserPoints.length > 0 && (
+                          <button
+                            onClick={() => setEraserPoints([])}
+                            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
                     </div>
+                  )}
+                </div>
+              )}
+
+              {/* CROP INTERFACE */}
+              {activeTool === "crop" && (
+                <div className="flex flex-col items-center gap-3 w-full">
+                  <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none w-full justify-start sm:justify-center">
+                    {cropRatiosList.map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => applyCropRatioPreset(r.id)}
+                        className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                          selectedCropRatio === r.id
+                            ? "bg-indigo-600 text-white border-indigo-400 shadow-md"
+                            : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
+                        }`}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                    <button
+                      onClick={performCanvasCrop}
+                      disabled={isApplyingCrop}
+                      className="px-5 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-indigo-600/30 active:scale-95"
+                    >
+                      <Scissors className="w-4 h-4" />
+                      <span>{isApplyingCrop ? "Cropping Image..." : "Apply Crop"}</span>
+                    </button>
+
+                    <button
+                      onClick={() => setRotation((r) => (r + 90) % 360)}
+                      className="px-4 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      <RotateCw className="w-4 h-4" />
+                      <span>Rotate 90°</span>
+                    </button>
+
+                    <button
+                      onClick={() => setFlipH(!flipH)}
+                      className="px-4 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      <FlipHorizontal className="w-4 h-4" />
+                      <span>Flip Horizontal</span>
+                    </button>
                   </div>
                 </div>
               )}
-            </div>
+
+              {/* FILTER INTERFACE */}
+              {activeTool === "filter" && (
+                <div className="flex gap-2.5 overflow-x-auto pb-2 scrollbar-none w-full">
+                  {filtersList.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => {
+                        haptics.selection();
+                        applyPresetFilter(f.id);
+                      }}
+                      className={`flex-shrink-0 px-4 py-2 rounded-2xl border text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                        filter === f.id
+                          ? "bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30"
+                          : "bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <span>{f.label}</span>
+                      {filter === f.id && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* TEXT INTERFACE */}
+              {activeTool === "text" && (
+                <div className="flex flex-col gap-3 w-full max-w-xl mx-auto">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        haptics.selection();
+                        const newOverlay: TextOverlay = {
+                          id: `text-${Date.now()}`,
+                          text: "Sample Text",
+                          xNormalized: 0.5,
+                          yNormalized: 0.5,
+                          scale: 1,
+                          rotation: 0,
+                          fontFamily: "sans",
+                          color: "#ffffff",
+                          opacity: 1,
+                          alignment: "center",
+                          style: "shadow",
+                          bgColor: "#000000",
+                        };
+                        setTextOverlays((prev) => [...prev, newOverlay]);
+                        setActiveTextId(newOverlay.id);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer active:scale-95"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add Text</span>
+                    </button>
+
+                    {activeTextId && (
+                      <input
+                        type="text"
+                        value={textOverlays.find((t) => t.id === activeTextId)?.text || ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setTextOverlays((prev) =>
+                            prev.map((t) => (t.id === activeTextId ? { ...t, text: val } : t))
+                          );
+                        }}
+                        placeholder="Type text here..."
+                        className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-slate-100 focus:outline-none focus:border-indigo-500"
+                      />
+                    )}
+                  </div>
+
+                  {/* Font & Style options */}
+                  {activeTextId && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                        {[
+                          { id: "sans", label: "Sans", fontClass: "font-sans" },
+                          { id: "serif", label: "Serif", fontClass: "font-serif" },
+                          { id: "display", label: "Display", fontClass: "font-black uppercase tracking-wider" },
+                          { id: "script", label: "Script", fontClass: "font-serif italic" },
+                          { id: "mono", label: "Mono", fontClass: "font-mono" },
+                        ].map((f) => {
+                          const activeItem = textOverlays.find((t) => t.id === activeTextId);
+                          const isSel = activeItem?.fontFamily === f.id;
+                          return (
+                            <button
+                              key={f.id}
+                              onClick={() =>
+                                setTextOverlays((prev) =>
+                                  prev.map((t) =>
+                                    t.id === activeTextId ? { ...t, fontFamily: f.id as any } : t
+                                  )
+                                )
+                              }
+                              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shrink-0 ${f.fontClass} ${
+                                isSel
+                                  ? "bg-indigo-600 text-white border-indigo-400"
+                                  : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
+                              }`}
+                            >
+                              {f.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          {["#ffffff", "#000000", "#f87171", "#fbbf24", "#34d399", "#60a5fa", "#c084fc", "#f472b6"].map((color) => {
+                            const activeItem = textOverlays.find((t) => t.id === activeTextId);
+                            const isSel = activeItem?.color === color;
+                            return (
+                              <button
+                                key={color}
+                                onClick={() =>
+                                  setTextOverlays((prev) =>
+                                    prev.map((t) => (t.id === activeTextId ? { ...t, color } : t))
+                                  )
+                                }
+                                style={{ backgroundColor: color }}
+                                className={`w-6 h-6 rounded-full border border-white/20 transition-transform cursor-pointer ${
+                                  isSel ? "scale-125 ring-2 ring-indigo-400" : "hover:scale-110"
+                                }`}
+                              />
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                          {[
+                            { id: "normal", label: "Plain" },
+                            { id: "shadow", label: "Shadow" },
+                            { id: "outline", label: "Outline" },
+                            { id: "background", label: "Badge" },
+                          ].map((st) => {
+                            const activeItem = textOverlays.find((t) => t.id === activeTextId);
+                            const isSel = activeItem?.style === st.id;
+                            return (
+                              <button
+                                key={st.id}
+                                onClick={() =>
+                                  setTextOverlays((prev) =>
+                                    prev.map((t) => (t.id === activeTextId ? { ...t, style: st.id as any } : t))
+                                  )
+                                }
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
+                                  isSel ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+                                }`}
+                              >
+                                {st.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STICKERS INTERFACE */}
+              {activeTool === "stickers" && (
+                <div className="space-y-2 max-w-xl mx-auto">
+                  <p className="text-[11px] text-slate-400 text-center font-medium">
+                    Tap a sticker to add it to your photo
+                  </p>
+                  <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none justify-start sm:justify-center">
+                    {[
+                      "✨", "❤️", "🔥", "😎", "⭐", "🎉", "🌈", "🌸", "👑", "🚀",
+                      "💡", "🎨", "📸", "☀️", "🌴", "☕", "🏆", "💯", "✌️", "🍀"
+                    ].map((stickerEmoji) => (
+                      <button
+                        key={stickerEmoji}
+                        onClick={() => {
+                          haptics.selection();
+                          const newSticker: StickerOverlay = {
+                            id: `sticker-${Date.now()}`,
+                            sticker: stickerEmoji,
+                            xNormalized: 0.5,
+                            yNormalized: 0.5,
+                            scale: 1,
+                            rotation: 0,
+                          };
+                          setStickerOverlays((prev) => [...prev, newSticker]);
+                          setActiveStickerId(newSticker.id);
+                        }}
+                        className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500 hover:bg-slate-800/80 text-2xl flex items-center justify-center transition-all cursor-pointer active:scale-90 shrink-0"
+                      >
+                        {stickerEmoji}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </motion.div>
           )}
-        </div>
+        </AnimatePresence>
       </div>
+
+      {/* Discard Changes Confirmation Modal */}
+      {showDiscardConfirmModal && (
+        <div className="fixed inset-0 z-[120] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-2xl text-left">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-3">
+              <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">Quit Editing?</h3>
+                <p className="text-[11px] text-slate-400">Do you want to discard edits and exit, or keep editing?</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setShowDiscardConfirmModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer transition-all border border-slate-700/60"
+              >
+                Keep Editing
+              </button>
+              <button
+                onClick={() => {
+                  setShowDiscardConfirmModal(false);
+                  onClose();
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md cursor-pointer transition-all"
+              >
+                Discard & Exit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-};
+});

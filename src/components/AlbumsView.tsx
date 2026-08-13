@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import {
   Folder,
   Plus,
@@ -26,6 +26,7 @@ import {
   FolderPlus,
 } from "lucide-react";
 import { Album, Photo } from "../types";
+import { BatchShareModal } from "./BatchShareModal";
 
 interface AlbumPhotoCardProps {
   photo: Photo;
@@ -60,7 +61,11 @@ const AlbumPhotoCard: React.FC<AlbumPhotoCardProps> = ({
     if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     holdTimerRef.current = setTimeout(() => {
       isHoldRef.current = true;
-      onToggleSelectPhoto(photo.id);
+      if (hasSelectionMode) {
+        onOpenPhoto(photo, albumPhotos);
+      } else {
+        onToggleSelectPhoto(photo.id);
+      }
       if (typeof navigator !== "undefined" && navigator.vibrate) {
         navigator.vibrate(40);
       }
@@ -171,9 +176,15 @@ interface AlbumsViewProps {
   onToggleFavorite?: (photoId: string) => void;
   onDeletePhoto?: (photoId: string) => void;
   onOpenedAlbumChange?: (isOpened: boolean) => void;
+  selectedAlbumIdProp?: string | null;
+  onSelectAlbum?: (albumId: string | null) => void;
 }
 
-export const AlbumsView: React.FC<AlbumsViewProps> = ({
+export interface AlbumsViewRef {
+  handleBack: () => boolean;
+}
+
+export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
   albums = [],
   photos = [],
   onCreateAlbum,
@@ -185,8 +196,18 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
   onToggleFavorite,
   onDeletePhoto,
   onOpenedAlbumChange,
-}) => {
-  const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
+  selectedAlbumIdProp,
+  onSelectAlbum,
+}, ref) => {
+  const [internalSelectedAlbumId, setInternalSelectedAlbumId] = useState<string | null>(null);
+  const selectedAlbumId = selectedAlbumIdProp !== undefined ? selectedAlbumIdProp : internalSelectedAlbumId;
+
+  const handleSetSelectedAlbumId = (id: string | null) => {
+    setInternalSelectedAlbumId(id);
+    if (onSelectAlbum) {
+      onSelectAlbum(id);
+    }
+  };
 
   // Notify parent component whether an album is currently opened
   useEffect(() => {
@@ -212,9 +233,46 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
 
   // Move / Copy to Album Modal State
   const [showMoveCopyModal, setShowMoveCopyModal] = useState(false);
+  const [showBatchShareModal, setShowBatchShareModal] = useState(false);
   const [moveCopyMode, setMoveCopyMode] = useState<"move" | "copy">("move");
   const [targetPhotoIdsForMoveCopy, setTargetPhotoIdsForMoveCopy] = useState<string[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (showCreateModal) {
+        setShowCreateModal(false);
+        return true;
+      }
+      if (showEditModal) {
+        setShowEditModal(false);
+        return true;
+      }
+      if (showAddPhotosModal) {
+        setShowAddPhotosModal(false);
+        setSelectedPhotoIdsToAdd([]);
+        return true;
+      }
+      if (showMoveCopyModal) {
+        setShowMoveCopyModal(false);
+        setTargetPhotoIdsForMoveCopy([]);
+        return true;
+      }
+      if (showBatchShareModal) {
+        setShowBatchShareModal(false);
+        return true;
+      }
+      if (selectedPhotoIdsInAlbum.length > 0) {
+        setSelectedPhotoIdsInAlbum([]);
+        return true;
+      }
+      if (selectedAlbumId) {
+        handleSetSelectedAlbumId(null);
+        return true;
+      }
+      return false;
+    },
+  }));
 
   const handleOpenMoveCopy = (photoIds: string[]) => {
     if (photoIds.length === 0) return;
@@ -266,7 +324,7 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
     if (selectedAlbumId) {
       const currentAlb = albums.find((a) => a.id === selectedAlbumId);
       if (!currentAlb || albumPhotos.length === 0) {
-        setSelectedAlbumId(null);
+        handleSetSelectedAlbumId(null);
       }
     }
   }, [selectedAlbumId, albumPhotos.length, albums]);
@@ -319,16 +377,7 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
   const handleBatchShareAlbum = () => {
     const selected = albumPhotos.filter((p) => selectedPhotoIdsInAlbum.includes(p.id));
     if (selected.length === 0) return;
-    const urls = selected.map((p) => p.highResUrl || p.url).join("\n");
-    if (typeof navigator !== "undefined" && navigator.share) {
-      navigator.share({
-        title: `${selected.length} Photos`,
-        url: selected[0]?.highResUrl || selected[0]?.url,
-      }).catch(() => {});
-    } else {
-      navigator.clipboard.writeText(urls);
-      alert(`Copied links for ${selected.length} photos!`);
-    }
+    setShowBatchShareModal(true);
   };
 
   const handleCreateSubmit = (e: React.FormEvent) => {
@@ -387,127 +436,60 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
       {/* If viewing a specific album */}
       {selectedAlbum ? (
         <div className="space-y-6 animate-fade-in">
-          {/* Album Header */}
-          <div className="flex flex-wrap items-center justify-between bg-slate-900/90 p-5 rounded-3xl border border-slate-800 gap-4 shadow-lg">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => setSelectedAlbumId(null)}
-                className="p-2.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white cursor-pointer transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-              <div>
-                <h2 className="text-lg sm:text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <span>{selectedAlbum.name}</span>
-                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    {albumPhotos.length} photos
-                  </span>
-                </h2>
-                {selectedAlbum.description && (
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {selectedAlbum.description}
-                  </p>
-                )}
-              </div>
-            </div>
+          {/* Album Header (Transforms into Action Toggle Bar when items are selected) */}
+          {selectedPhotoIdsInAlbum.length > 0 ? (
+            <div className="flex items-center justify-between bg-indigo-950/95 border border-indigo-500/50 p-3 sm:p-4 rounded-3xl shadow-xl backdrop-blur-xl animate-fade-in gap-3">
+              {/* Left Side: Clear Selection & Select All & Selection Count */}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  onClick={() => setSelectedPhotoIdsInAlbum([])}
+                  className="p-1.5 sm:p-2 rounded-xl text-indigo-300 hover:text-white hover:bg-indigo-900/80 transition-all cursor-pointer shrink-0"
+                  title="Exit Selection Mode"
+                >
+                  <X className="w-5 h-5 text-indigo-300" />
+                </button>
 
-            <div className="flex items-center gap-2">
-              {/* Select All / Deselect All Items in Album */}
-              {albumPhotos.length > 0 && (
                 <button
                   onClick={handleToggleSelectAllInAlbum}
-                  className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all cursor-pointer ${
-                    isAllSelectedInAlbum || selectedPhotoIdsInAlbum.length > 0
-                      ? "bg-indigo-600/30 text-indigo-300 border-indigo-500/50"
-                      : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/80"
-                  }`}
-                  title={isAllSelectedInAlbum ? "Deselect All Items" : "Select All Items"}
-                >
-                  <CheckSquare className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>{isAllSelectedInAlbum ? "Deselect All" : "Select All"}</span>
-                </button>
-              )}
-
-              {/* Add Photos to Album */}
-              <button
-                onClick={() => {
-                  setSelectedPhotoIdsToAdd([]);
-                  setShowAddPhotosModal(true);
-                }}
-                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add Photos</span>
-              </button>
-
-              {/* Edit Album Details */}
-              <button
-                onClick={openEditModal}
-                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Pencil className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Edit</span>
-              </button>
-
-              {/* Delete Album */}
-              {selectedAlbum.type !== "system" && onDeleteAlbum && (
-                <button
-                  onClick={() => {
-                    if (confirm(`Are you sure you want to delete album "${selectedAlbum.name}"?`)) {
-                      onDeleteAlbum(selectedAlbum.id);
-                      setSelectedAlbumId(null);
-                    }
-                  }}
-                  className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 cursor-pointer"
-                  title="Delete Album"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Batch Selection Action Bar for Album */}
-          {selectedPhotoIdsInAlbum.length > 0 && (
-            <div className="bg-indigo-950/90 border border-indigo-500/40 p-2.5 rounded-2xl flex items-center justify-between gap-3 shadow-xl animate-fade-in">
-              <div className="flex items-center gap-2.5">
-                {/* Checkbox box next to text: 1 tick when partially selected, 2 ticks when all selected */}
-                <button
-                  onClick={handleToggleSelectAllInAlbum}
-                  className={`p-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center ${
+                  className={`p-1.5 sm:p-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
                     isAllSelectedInAlbum
-                      ? "bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-500/30"
-                      : "bg-slate-900 text-indigo-400 hover:text-indigo-300 border-indigo-500/40 hover:bg-slate-800"
+                      ? "bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-500/30"
+                      : "bg-indigo-900/60 text-indigo-300 hover:text-white border-indigo-500/40 hover:bg-indigo-800/80"
                   }`}
                   title={isAllSelectedInAlbum ? "Deselect All Items" : "Select All Items"}
                 >
                   {isAllSelectedInAlbum ? (
                     <CheckCheck className="w-4 h-4 text-white" />
                   ) : (
-                    <Check className="w-4 h-4 text-indigo-400" />
+                    <Check className="w-4 h-4 text-indigo-300" />
                   )}
                 </button>
 
-                <span className="text-xs font-bold text-indigo-200">
-                  {selectedPhotoIdsInAlbum.length} item{selectedPhotoIdsInAlbum.length > 1 ? "s" : ""} selected
-                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-sm sm:text-base lg:text-lg font-bold text-indigo-100 tracking-tight truncate flex items-center gap-1.5">
+                    <span>{selectedPhotoIdsInAlbum.length}</span>
+                    <span className="font-medium text-indigo-200">
+                      item{selectedPhotoIdsInAlbum.length > 1 ? "s" : ""} selected
+                    </span>
+                  </h2>
+                </div>
               </div>
 
-              <div className="flex items-center gap-1.5">
-                {/* Three Dots Options Menu for Move / Copy */}
+              {/* Right Side: Batch Actions */}
+              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
                 <button
                   onClick={() => handleOpenMoveCopy(selectedPhotoIdsInAlbum)}
-                  className="px-2.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 cursor-pointer shadow-md flex items-center gap-1.5 transition-all"
+                  className="px-2.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 cursor-pointer shadow-md flex items-center gap-1.5 transition-all text-xs font-semibold"
                   title="Move or Copy selected to album"
                 >
                   <MoreVertical className="w-4 h-4 text-white" />
-                  <span className="text-xs font-semibold hidden sm:inline">Move / Copy</span>
+                  <span className="hidden sm:inline">Move / Copy</span>
                 </button>
 
                 {onRemoveFromAlbum && (
                   <button
                     onClick={handleBatchRemoveFromAlbum}
-                    className="p-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 cursor-pointer"
+                    className="p-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 cursor-pointer transition-all shadow-sm"
                     title="Remove selected from album"
                   >
                     <MinusCircle className="w-4 h-4" />
@@ -516,7 +498,7 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
 
                 <button
                   onClick={handleBatchShareAlbum}
-                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-400 border border-slate-700/60 cursor-pointer"
+                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-400 border border-slate-700/60 cursor-pointer transition-all shadow-sm"
                   title="Share Selected"
                 >
                   <Share2 className="w-4 h-4 text-sky-400" />
@@ -525,33 +507,106 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
                 {onToggleFavorite && (
                   <button
                     onClick={handleBatchFavoriteAlbum}
-                    className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-pink-400 border border-slate-700/60 cursor-pointer"
+                    className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-pink-400 border border-slate-700/60 cursor-pointer transition-all shadow-sm"
                     title="Favorite Selected"
                   >
-                    <Heart className="w-4 h-4 fill-pink-400" />
+                    <Heart className="w-4 h-4 fill-pink-400 text-pink-400" />
                   </button>
                 )}
 
                 {onDeletePhoto && (
                   <button
                     onClick={handleBatchDeleteAlbum}
-                    className="p-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 cursor-pointer"
+                    className="p-2 rounded-xl bg-red-900/40 hover:bg-red-900/70 text-red-400 border border-red-700/60 cursor-pointer transition-all shadow-sm"
                     title="Delete Selected"
+                  >
+                    <Trash2 className="w-4 h-4 text-red-400" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between bg-slate-900/90 p-5 rounded-3xl border border-slate-800 gap-4 shadow-lg">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => handleSetSelectedAlbumId(null)}
+                  className="p-2.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white cursor-pointer transition-colors"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold text-slate-100 flex items-center gap-2">
+                    <span>{selectedAlbum.name}</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {albumPhotos.length} photos
+                    </span>
+                  </h2>
+                  {selectedAlbum.description && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {selectedAlbum.description}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Select All / Deselect All Items in Album */}
+                {albumPhotos.length > 0 && (
+                  <button
+                    onClick={handleToggleSelectAllInAlbum}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                      isAllSelectedInAlbum || selectedPhotoIdsInAlbum.length > 0
+                        ? "bg-indigo-600/30 text-indigo-300 border-indigo-500/50"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/80"
+                    }`}
+                    title={isAllSelectedInAlbum ? "Deselect All Items" : "Select All Items"}
+                  >
+                    <CheckSquare className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>{isAllSelectedInAlbum ? "Deselect All" : "Select All"}</span>
+                  </button>
+                )}
+
+                {/* Add Photos to Album */}
+                <button
+                  onClick={() => {
+                    setSelectedPhotoIdsToAdd([]);
+                    setShowAddPhotosModal(true);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md cursor-pointer transition-all"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Add Photos</span>
+                </button>
+
+                {/* Edit Album Details */}
+                <button
+                  onClick={openEditModal}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Edit</span>
+                </button>
+
+                {/* Delete Album */}
+                {selectedAlbum.type !== "system" && onDeleteAlbum && (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Are you sure you want to delete album "${selectedAlbum.name}"?`)) {
+                        onDeleteAlbum(selectedAlbum.id);
+                        handleSetSelectedAlbumId(null);
+                      }
+                    }}
+                    className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 cursor-pointer"
+                    title="Delete Album"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 )}
-
-                <button
-                  onClick={() => setSelectedPhotoIdsInAlbum([])}
-                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-100 border border-slate-700/60 cursor-pointer"
-                  title="Clear Selection"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
             </div>
           )}
+
+
 
           {/* Album Photos Grid */}
           {albumPhotos.length === 0 ? (
@@ -623,7 +678,7 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
               return (
                 <div
                   key={album.id}
-                  onClick={() => setSelectedAlbumId(album.id)}
+                  onClick={() => handleSetSelectedAlbumId(album.id)}
                   className="group rounded-2xl bg-slate-900/80 border border-slate-800/80 hover:border-indigo-500/50 hover:bg-slate-900 p-4 transition-all duration-300 cursor-pointer flex flex-col justify-between shadow-sm"
                 >
                   <div className="aspect-video w-full rounded-xl overflow-hidden bg-slate-950 mb-3 relative">
@@ -1052,6 +1107,17 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
         </div>
       )}
 
+      {/* Multi-Item Share Modal for Album Selection */}
+      <BatchShareModal
+        isOpen={showBatchShareModal}
+        selectedPhotos={albumPhotos.filter((p) => selectedPhotoIdsInAlbum.includes(p.id))}
+        onClose={() => setShowBatchShareModal(false)}
+        onShowToast={(msg) => {
+          setToastMessage(msg);
+          setTimeout(() => setToastMessage(null), 3500);
+        }}
+      />
+
       {/* Floating Toast Notice */}
       {toastMessage && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] px-4 py-2.5 rounded-full bg-slate-900 border border-indigo-500/50 text-indigo-200 text-xs font-bold flex items-center gap-2 shadow-2xl backdrop-blur-md animate-bounce-short">
@@ -1061,5 +1127,5 @@ export const AlbumsView: React.FC<AlbumsViewProps> = ({
       )}
     </div>
   );
-};
+});
 

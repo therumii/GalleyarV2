@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, forwardRef, useImperativeHandle } from "react";
 import {
   Lock,
   Unlock,
@@ -22,8 +22,9 @@ import {
   Play,
 } from "lucide-react";
 import { Photo } from "../types";
-import { isPinConfigured, savePin, verifyPin } from "../utils/cryptoVault";
+import { isPinConfigured, savePin, verifyPin, removePin } from "../utils/cryptoVault";
 import { VaultPinModal } from "./VaultPinModal";
+import { haptics } from "../utils/haptics";
 
 interface VaultPhotoCardProps {
   photo: Photo;
@@ -128,7 +129,11 @@ interface HiddenVaultModalProps {
   onBack: () => void;
 }
 
-export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
+export interface HiddenVaultRef {
+  handleBack: () => boolean;
+}
+
+export const HiddenVaultModal = forwardRef<HiddenVaultRef, HiddenVaultModalProps>(({
   hiddenPhotos = [],
   allGalleryPhotos = [],
   onOpenPhoto,
@@ -138,15 +143,17 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
   onPermanentDelete,
   onToggleFavorite,
   onBack,
-}) => {
+}, ref) => {
   const [pinInput, setPinInput] = useState("");
   const [confirmSetupPin, setConfirmSetupPin] = useState("");
   const [showPin, setShowPin] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [forceNewPinMode, setForceNewPinMode] = useState(false);
 
-  const isConfigured = isPinConfigured();
+  const isConfigured = isPinConfigured() && !forceNewPinMode;
 
   // Private Vault Multi-Selection State
   const [selectedVaultPhotoIds, setSelectedVaultPhotoIds] = useState<string[]>([]);
@@ -157,11 +164,41 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
   const [showDeleteVaultModal, setShowDeleteVaultModal] = useState(false);
   const [selectedPhotoIdsToAdd, setSelectedPhotoIdsToAdd] = useState<string[]>([]);
 
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (showDeleteVaultModal) {
+        setShowDeleteVaultModal(false);
+        return true;
+      }
+      if (showChangePinModal) {
+        setShowChangePinModal(false);
+        return true;
+      }
+      if (showAddPhotosModal) {
+        setSelectedPhotoIdsToAdd([]);
+        setShowAddPhotosModal(false);
+        return true;
+      }
+      if (selectedVaultPhotoIds.length > 0) {
+        setSelectedVaultPhotoIds([]);
+        return true;
+      }
+      if (isUnlocked) {
+        setIsUnlocked(false);
+        onBack();
+        return true;
+      }
+      onBack();
+      return true;
+    },
+  }));
+
   const isAllVaultSelected =
     hiddenPhotos.length > 0 &&
     hiddenPhotos.every((p) => selectedVaultPhotoIds.includes(p.id));
 
   const handleToggleSelectAllVault = () => {
+    haptics.selection();
     if (isAllVaultSelected) {
       setSelectedVaultPhotoIds([]);
     } else {
@@ -171,6 +208,7 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
 
   const handleToggleSelectPhotoVault = (photoId: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    haptics.selection();
     setSelectedVaultPhotoIds((prev) =>
       prev.includes(photoId)
         ? prev.filter((id) => id !== photoId)
@@ -179,6 +217,7 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
   };
 
   const handleBatchUnhideVault = () => {
+    haptics.success();
     selectedVaultPhotoIds.forEach((id) => {
       onUnhidePhoto(id);
     });
@@ -187,10 +226,12 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
 
   const handleBatchDeleteVault = () => {
     if (selectedVaultPhotoIds.length === 0) return;
+    haptics.selection();
     setShowDeleteVaultModal(true);
   };
 
   const handleConfirmMoveToTrashVault = () => {
+    haptics.warning();
     if (onDeletePhoto) {
       selectedVaultPhotoIds.forEach((id) => {
         onDeletePhoto(id);
@@ -201,6 +242,7 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
   };
 
   const handleConfirmPermanentDeleteVault = () => {
+    haptics.warning();
     selectedVaultPhotoIds.forEach((id) => {
       if (onPermanentDelete) {
         onPermanentDelete(id);
@@ -214,6 +256,7 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
 
   const handleBatchFavoriteVault = () => {
     if (!onToggleFavorite) return;
+    haptics.success();
     selectedVaultPhotoIds.forEach((id) => {
       onToggleFavorite(id);
     });
@@ -223,6 +266,7 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
   const handleBatchShareVault = () => {
     const selected = hiddenPhotos.filter((p) => selectedVaultPhotoIds.includes(p.id));
     if (selected.length === 0) return;
+    haptics.selection();
     const urls = selected.map((p) => p.highResUrl || p.url).join("\n");
     if (typeof navigator !== "undefined" && navigator.share) {
       navigator.share({
@@ -230,7 +274,9 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
         url: selected[0]?.highResUrl || selected[0]?.url,
       }).catch(() => {});
     } else {
-      navigator.clipboard.writeText(urls);
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(urls).catch(() => {});
+      }
       alert(`Copied links for ${selected.length} vault photos!`);
     }
   };
@@ -240,12 +286,14 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
     setErrorMsg("");
 
     if (!isConfigured) {
-      // Setup PIN flow
+      // Setup / Create New PIN flow
       if (!/^\d{4,8}$/.test(pinInput)) {
+        haptics.error();
         setErrorMsg("Passcode must be 4 to 8 numeric digits.");
         return;
       }
       if (pinInput !== confirmSetupPin) {
+        haptics.error();
         setErrorMsg("Passcodes do not match. Please try again.");
         return;
       }
@@ -255,10 +303,15 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
       setIsVerifying(false);
 
       if (saved) {
+        haptics.success();
         setIsUnlocked(true);
         setPinInput("");
         setConfirmSetupPin("");
+        setFailedAttempts(0);
+        setForceNewPinMode(false);
+        setErrorMsg("");
       } else {
+        haptics.error();
         setErrorMsg("Failed to configure passcode. Please try again.");
       }
     } else {
@@ -269,11 +322,24 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
       setIsVerifying(false);
 
       if (isMatch) {
+        haptics.success();
         setIsUnlocked(true);
         setErrorMsg("");
         setPinInput("");
+        setFailedAttempts(0);
       } else {
-        setErrorMsg("Incorrect passcode. Please try again.");
+        haptics.error();
+        const nextAttempts = failedAttempts + 1;
+        setFailedAttempts(nextAttempts);
+        setPinInput("");
+
+        if (nextAttempts >= 11) {
+          removePin();
+          setForceNewPinMode(true);
+          setErrorMsg("You have attempted 11 wrong passwords. Please create a new password.");
+        } else {
+          setErrorMsg(`Incorrect passcode (${nextAttempts}/11 attempts). Please try again.`);
+        }
       }
     }
   };
@@ -298,12 +364,18 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
 
           <div>
             <h3 className="text-base font-bold text-slate-100">
-              {isConfigured ? "Private Vault Locked" : "Set Up Private Vault"}
+              {forceNewPinMode
+                ? "Create a New Passcode"
+                : isConfigured
+                ? "Personal Diaries Locked"
+                : "Set Up Personal Diaries"}
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              {isConfigured
+              {forceNewPinMode
+                ? "Attempt limit exceeded (11 wrong passwords). Please enter a new passcode below."
+                : isConfigured
                 ? "Enter your numeric passcode to access hidden media"
-                : "Create a 4-8 digit passcode to lock your Private Vault"}
+                : "Create a 4-8 digit passcode to lock your Personal Diaries"}
             </p>
           </div>
 
@@ -402,101 +474,59 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
 
   return (
     <div className="p-4 sm:p-6 space-y-6 animate-fade-in">
-      {/* Vault Header Bar */}
-      <div className="bg-slate-900/90 border border-slate-800 p-4 sm:p-5 rounded-3xl flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onBack}
-            className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
-            <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
-              <Unlock className="w-4 h-4 text-emerald-400" />
-              <span>Private Vault</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
-                {hiddenPhotos.length} photos
-              </span>
-            </h2>
-            <p className="text-xs text-slate-400">
-              Secured photo vault protected by your personal 4-digit passcode
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Add Photos to Vault (Shown in header bar when vault contains photos) */}
-          {hiddenPhotos.length > 0 && (
+      {/* Vault Header Bar (Transforms into Action Toggle Bar when items are selected) */}
+      {selectedVaultPhotoIds.length > 0 ? (
+        <div className="bg-indigo-950/95 border border-indigo-500/50 p-3 sm:p-4 rounded-3xl flex items-center justify-between gap-3 shadow-xl backdrop-blur-xl animate-fade-in">
+          {/* Left Side: Exit Selection & Select All & Selection Count */}
+          <div className="flex items-center gap-2.5 min-w-0">
             <button
-              onClick={() => setShowAddPhotosModal(true)}
-              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md"
+              onClick={() => setSelectedVaultPhotoIds([])}
+              className="p-1.5 sm:p-2 rounded-xl text-indigo-300 hover:text-white hover:bg-indigo-900/80 transition-all cursor-pointer shrink-0"
+              title="Exit Selection Mode"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Photos</span>
+              <X className="w-5 h-5 text-indigo-300" />
             </button>
-          )}
 
-          {/* Change Passcode */}
-          <button
-            onClick={() => {
-              setShowChangePinModal(true);
-            }}
-            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-          >
-            <KeyRound className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Change Passcode</span>
-          </button>
-
-          {/* Lock Vault */}
-          <button
-            onClick={() => setIsUnlocked(false)}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700/80 cursor-pointer"
-            title="Lock Vault Now"
-          >
-            <Lock className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Batch Selection Action Bar for Vault */}
-      {selectedVaultPhotoIds.length > 0 && (
-        <div className="bg-indigo-950/90 border border-indigo-500/40 p-2.5 rounded-2xl flex items-center justify-between gap-3 shadow-xl animate-fade-in">
-          <div className="flex items-center gap-2.5">
-            {/* Box button next to text: 1 tick when partially selected, 2 ticks when all selected */}
             <button
               onClick={handleToggleSelectAllVault}
-              className={`p-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center ${
+              className={`p-1.5 sm:p-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
                 isAllVaultSelected
-                  ? "bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-500/30"
-                  : "bg-slate-900 text-indigo-400 hover:text-indigo-300 border-indigo-500/40 hover:bg-slate-800"
+                  ? "bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-500/30"
+                  : "bg-indigo-900/60 text-indigo-300 hover:text-white border-indigo-500/40 hover:bg-indigo-800/80"
               }`}
               title={isAllVaultSelected ? "Deselect All Items" : "Select All Items"}
             >
               {isAllVaultSelected ? (
                 <CheckCheck className="w-4 h-4 text-white" />
               ) : (
-                <Check className="w-4 h-4 text-indigo-400" />
+                <Check className="w-4 h-4 text-indigo-300" />
               )}
             </button>
 
-            <span className="text-xs font-bold text-indigo-200">
-              {selectedVaultPhotoIds.length} item{selectedVaultPhotoIds.length > 1 ? "s" : ""} selected
-            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm sm:text-base lg:text-lg font-bold text-indigo-100 tracking-tight truncate flex items-center gap-1.5">
+                <span>{selectedVaultPhotoIds.length}</span>
+                <span className="font-medium text-indigo-200">
+                  item{selectedVaultPhotoIds.length > 1 ? "s" : ""} selected
+                </span>
+              </h2>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          {/* Right Side: Batch Action Controls */}
+          <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
             <button
               onClick={handleBatchUnhideVault}
-              className="p-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 cursor-pointer"
+              className="px-2.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/50 cursor-pointer shadow-md flex items-center gap-1.5 transition-all text-xs font-semibold"
               title="Unhide selected photos to gallery"
             >
-              <Eye className="w-4 h-4" />
+              <Eye className="w-4 h-4 text-white" />
+              <span className="hidden sm:inline">Unhide to Gallery</span>
             </button>
 
             <button
               onClick={handleBatchShareVault}
-              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-400 border border-slate-700/60 cursor-pointer"
+              className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-sky-400 border border-slate-700/60 cursor-pointer transition-all shadow-sm"
               title="Share Selected"
             >
               <Share2 className="w-4 h-4 text-sky-400" />
@@ -505,29 +535,77 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
             {onToggleFavorite && (
               <button
                 onClick={handleBatchFavoriteVault}
-                className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-pink-400 border border-slate-700/60 cursor-pointer"
+                className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-pink-400 border border-slate-700/60 cursor-pointer transition-all shadow-sm"
                 title="Favorite Selected"
               >
-                <Heart className="w-4 h-4 fill-pink-400" />
+                <Heart className="w-4 h-4 fill-pink-400 text-pink-400" />
               </button>
             )}
 
             {onDeletePhoto && (
               <button
                 onClick={handleBatchDeleteVault}
-                className="p-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 cursor-pointer"
+                className="p-2 rounded-xl bg-red-900/40 hover:bg-red-900/70 text-red-400 border border-red-700/60 cursor-pointer transition-all shadow-sm"
                 title="Delete Selected"
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="w-4 h-4 text-red-400" />
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-slate-900/90 border border-slate-800 p-4 sm:p-5 rounded-3xl flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onBack}
+              className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <div>
+              <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                <Unlock className="w-4 h-4 text-emerald-400" />
+                <span>Personal Diaries</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
+                  {hiddenPhotos.length} photos
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Secured media vault protected by your personal passcode
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Add Photos to Vault (Shown in header bar when vault contains photos) */}
+            {hiddenPhotos.length > 0 && (
+              <button
+                onClick={() => setShowAddPhotosModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Photos</span>
               </button>
             )}
 
+            {/* Change Passcode */}
             <button
-              onClick={() => setSelectedVaultPhotoIds([])}
-              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-100 border border-slate-700/60 cursor-pointer"
-              title="Clear Selection"
+              onClick={() => {
+                setShowChangePinModal(true);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
             >
-              <X className="w-4 h-4" />
+              <KeyRound className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Change Passcode</span>
+            </button>
+
+            {/* Lock Vault */}
+            <button
+              onClick={() => setIsUnlocked(false)}
+              className="p-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700/80 cursor-pointer"
+              title="Lock Vault Now"
+            >
+              <Lock className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -861,5 +939,5 @@ export const HiddenVaultModal: React.FC<HiddenVaultModalProps> = ({
       })()}
     </div>
   );
-};
+});
 

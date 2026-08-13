@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, forwardRef, useImperativeHandle } from "react";
 import {
   Sparkles,
   Play,
@@ -14,16 +14,34 @@ interface MemoriesViewProps {
   stories: MemoryStory[];
   photos: Photo[];
   onAddStory: (newStory: MemoryStory) => void;
-  onOpenPhoto: (photo: Photo) => void;
+  onOpenPhoto: (photo: Photo, photosList?: Photo[]) => void;
+  selectedStoryIdProp?: string | null;
+  onSelectStory?: (storyId: string | null) => void;
 }
 
-export const MemoriesView: React.FC<MemoriesViewProps> = ({
+export interface MemoriesViewRef {
+  handleBack: () => boolean;
+}
+
+export const MemoriesView = forwardRef<MemoriesViewRef, MemoriesViewProps>(({
   stories = [],
   photos = [],
   onAddStory,
   onOpenPhoto,
-}) => {
-  const [activeStory, setActiveStory] = useState<MemoryStory | null>(null);
+  selectedStoryIdProp,
+  onSelectStory,
+}, ref) => {
+  const [internalStoryId, setInternalStoryId] = useState<string | null>(null);
+  const activeStoryId = selectedStoryIdProp !== undefined ? selectedStoryIdProp : internalStoryId;
+  const activeStory = stories.find((s) => s.id === activeStoryId) || null;
+
+  const handleSetActiveStory = (story: MemoryStory | null) => {
+    setInternalStoryId(story ? story.id : null);
+    if (onSelectStory) {
+      onSelectStory(story ? story.id : null);
+    }
+  };
+
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -35,6 +53,20 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
 
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (showPromptModal) {
+        setShowPromptModal(false);
+        return true;
+      }
+      if (activeStory) {
+        handleSetActiveStory(null);
+        return true;
+      }
+      return false;
+    },
+  }));
+
   // Active story photos
   const activePhotos = activeStory
     ? photos.filter((p) => activeStory.photoIds?.includes(p.id))
@@ -45,7 +77,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
     const currentIdx = stories.findIndex((s) => s.id === activeStory.id);
     if (currentIdx < stories.length - 1) {
       setStoryAnimClass("animate-story-next");
-      setActiveStory(stories[currentIdx + 1]);
+      handleSetActiveStory(stories[currentIdx + 1]);
       setCurrentSlideIndex(0);
       setProgress(0);
     } else {
@@ -60,7 +92,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
     const currentIdx = stories.findIndex((s) => s.id === activeStory.id);
     if (currentIdx > 0) {
       setStoryAnimClass("animate-story-prev");
-      setActiveStory(stories[currentIdx - 1]);
+      handleSetActiveStory(stories[currentIdx - 1]);
       setCurrentSlideIndex(0);
       setProgress(0);
     } else {
@@ -148,7 +180,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
 
     // Swipe down to close story (dragOffset.y > 50)
     if (dragOffset.y > 50 && Math.abs(dragOffset.y) > Math.abs(dragOffset.x)) {
-      setActiveStory(null);
+      handleSetActiveStory(null);
       setIsPlaying(false);
       setDragStart(null);
       setIsDragging(false);
@@ -172,7 +204,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
   };
 
   const handleOpenStory = (story: MemoryStory) => {
-    setActiveStory(story);
+    handleSetActiveStory(story);
     setCurrentSlideIndex(0);
     setProgress(0);
     setIsPlaying(true);
@@ -305,7 +337,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
       {/* Fullscreen Story Reel Player */}
       {activeStory && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 animate-fade-in transition-colors duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in transition-colors duration-150 bg-slate-950"
           onTouchStart={(e) => e.stopPropagation()}
           onTouchMove={(e) => e.stopPropagation()}
           onTouchEnd={(e) => e.stopPropagation()}
@@ -313,7 +345,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
             backgroundColor:
               dragOffset.y > 0
                 ? `rgba(2, 6, 23, ${Math.max(0.15, 0.95 - dragOffset.y / 400)})`
-                : "rgba(2, 6, 23, 0.95)",
+                : "rgba(2, 6, 23, 1)",
             backdropFilter:
               dragOffset.y > 0
                 ? `blur(${Math.max(2, 24 - dragOffset.y / 15)}px)`
@@ -360,7 +392,7 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
                 ? "none"
                 : "all 0.35s cubic-bezier(0.25, 1, 0.5, 1)",
             }}
-            className={`relative w-full max-w-[400px] aspect-[9/16] max-h-[88vh] rounded-3xl overflow-hidden border border-slate-800 bg-slate-950 shadow-2xl flex flex-col justify-between select-none cursor-grab active:cursor-grabbing ${storyAnimClass}`}
+            className={`relative w-full h-full max-w-none max-h-none rounded-none border-0 overflow-hidden bg-slate-950 flex flex-col justify-between select-none cursor-grab active:cursor-grabbing ${storyAnimClass}`}
           >
             {/* Story Image */}
             {activePhotos.length > 0 && (
@@ -371,14 +403,14 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
                   activePhotos[currentSlideIndex]?.url
                 }
                 alt="Story slide"
-                className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300"
+                className="absolute inset-0 w-full h-full object-contain sm:object-cover transition-opacity duration-300"
               />
             )}
 
             {/* Top Story Header & Photo Indicator Bars */}
-            <div className="absolute top-0 inset-x-0 z-20 p-3 pt-3 bg-gradient-to-b from-black/85 via-black/40 to-transparent flex flex-col gap-2">
+            <div className="absolute top-0 inset-x-0 z-20 p-4 sm:p-6 pt-4 sm:pt-6 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex flex-col gap-2.5">
               {/* Photo Indicator Bar (Grey background highlighting to RED with 8s timer) */}
-              <div className="flex items-center gap-1.5 w-full">
+              <div className="flex items-center gap-1.5 w-full max-w-4xl mx-auto">
                 {activePhotos.map((_, idx) => (
                   <div
                     key={idx}
@@ -400,13 +432,13 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
               </div>
 
               {/* Story Title & Close Button */}
-              <div className="flex items-center justify-between mt-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="px-2.5 py-0.5 rounded-full bg-indigo-600/90 text-amber-300 text-xs font-bold flex items-center gap-1 shadow-sm">
-                    <Sparkles className="w-3 h-3" />
+              <div className="flex items-center justify-between mt-0.5 max-w-4xl mx-auto w-full">
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <span className="px-3 py-1 rounded-full bg-indigo-600/90 text-amber-300 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-md">
+                    <Sparkles className="w-3.5 h-3.5" />
                     <span>{activeStory.title}</span>
                   </span>
-                  <span className="text-[11px] text-slate-200 font-medium truncate max-w-[130px]">
+                  <span className="text-xs sm:text-sm text-slate-200 font-medium truncate max-w-[200px] sm:max-w-xs">
                     {activeStory.subtitle}
                   </span>
                 </div>
@@ -414,13 +446,13 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setActiveStory(null);
+                    handleSetActiveStory(null);
                     setIsPlaying(false);
                   }}
-                  className="p-1.5 rounded-full bg-black/60 hover:bg-black/90 text-slate-200 hover:text-white transition-all cursor-pointer z-30"
+                  className="p-2 sm:p-2.5 rounded-full bg-black/60 hover:bg-black/90 text-slate-200 hover:text-white transition-all cursor-pointer z-30 border border-white/10"
                   title="Close Story"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
@@ -447,14 +479,14 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
 
             {/* Story Bottom Narrative Overlay */}
             {activePhotos.length > 0 && (
-              <div className="absolute bottom-4 inset-x-4 z-20 p-3.5 rounded-2xl bg-slate-950/85 backdrop-blur-md border border-slate-800/80 text-center space-y-1 shadow-2xl pointer-events-none">
-                <p className="text-[10px] text-amber-300 font-bold uppercase tracking-wider">
+              <div className="absolute bottom-6 sm:bottom-8 inset-x-4 sm:inset-x-8 max-w-xl mx-auto z-20 p-4 sm:p-5 rounded-2xl bg-slate-950/90 backdrop-blur-md border border-slate-800/90 text-center space-y-1.5 shadow-2xl pointer-events-none">
+                <p className="text-[11px] text-amber-300 font-bold uppercase tracking-wider">
                   {activeStory.soundtrack}
                 </p>
-                <p className="text-xs font-semibold text-slate-100 line-clamp-2">
+                <p className="text-xs sm:text-sm font-semibold text-slate-100 line-clamp-2 leading-relaxed">
                   "{activeStory.narrative}"
                 </p>
-                <p className="text-[10px] text-slate-400">
+                <p className="text-[11px] text-slate-400">
                   {activePhotos[currentSlideIndex]?.title} • {activePhotos[currentSlideIndex]?.location?.name}
                 </p>
               </div>
@@ -531,4 +563,4 @@ export const MemoriesView: React.FC<MemoriesViewProps> = ({
       )}
     </div>
   );
-};
+});

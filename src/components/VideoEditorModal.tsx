@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   X,
@@ -20,8 +20,14 @@ import {
   Type,
   Trash2,
   Plus,
+  AlertCircle,
+  Pencil,
+  ChevronLeft,
 } from "lucide-react";
-import { Photo, VideoEditState, TextOverlay } from "../types";
+import { Photo, VideoEditState, TextOverlay, StickerOverlay } from "../types";
+import { haptics } from "../utils/haptics";
+import { getEditedMediaTitle } from "../utils/mediaTitle";
+import { EditingToolDock, EditorTool } from "./EditingToolDock";
 
 interface VideoEditorModalProps {
   photo: Photo;
@@ -29,22 +35,32 @@ interface VideoEditorModalProps {
   onClose: () => void;
 }
 
+export interface VideoEditorRef {
+  handleBack: () => boolean;
+}
+
 const DEFAULT_FALLBACK_VIDEO =
   "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
 
-export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
+export const VideoEditorModal = forwardRef<VideoEditorRef, VideoEditorModalProps>(({
   photo,
   onSave,
   onClose,
-}) => {
+}, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
   // Video source
   const videoSrc = photo.videoUrl || photo.highResUrl || DEFAULT_FALLBACK_VIDEO;
 
-  // Active Editor Tab
-  const [activeTab, setActiveTab] = useState<"trim" | "filter" | "adjust" | "transform" | "text">("trim");
+  // Active Editor Dock Tool state
+  const [activeTool, setActiveTool] = useState<EditorTool>("none");
+  const [selectedAdjustment, setSelectedAdjustment] = useState<"brightness" | "contrast" | "saturation" | "warmth" | "speed" | "volume">("brightness");
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+
+  // Sticker Overlays State
+  const [stickerOverlays, setStickerOverlays] = useState<StickerOverlay[]>([]);
+  const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
 
   // Video metadata
   const [duration, setDuration] = useState<number>(0);
@@ -107,6 +123,47 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<number>(0);
   const [showSaveOptions, setShowSaveOptions] = useState<boolean>(false);
+  const [showDiscardConfirmModal, setShowDiscardConfirmModal] = useState<boolean>(false);
+
+  // Compute unsaved edits status
+  const isDirty =
+    trimStart !== (photo.videoEditState?.trimStart || 0) ||
+    (duration > 0 && trimEnd !== (photo.videoEditState?.trimEnd || duration)) ||
+    brightness !== (photo.videoEditState?.brightness || 0) ||
+    contrast !== (photo.videoEditState?.contrast || 0) ||
+    saturation !== (photo.videoEditState?.saturation || 0) ||
+    warmth !== (photo.videoEditState?.warmth || 0) ||
+    filter !== (photo.videoEditState?.filter || "none") ||
+    rotation !== (photo.videoEditState?.rotation || 0) ||
+    playbackRate !== (photo.videoEditState?.playbackRate || 1) ||
+    isMuted !== (photo.videoEditState?.isMuted || false) ||
+    textOverlays.length !== (photo.videoEditState?.textOverlays?.length || 0);
+
+  const handleAttemptClose = () => {
+    if (showDiscardConfirmModal) {
+      setShowDiscardConfirmModal(false);
+      return;
+    }
+    if (showSaveOptions) {
+      setShowSaveOptions(false);
+    }
+    setShowDiscardConfirmModal(true);
+  };
+
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (showDiscardConfirmModal) {
+        setShowDiscardConfirmModal(false);
+        return true;
+      }
+      if (showSaveOptions) {
+        setShowSaveOptions(false);
+        return true;
+      }
+      setShowDiscardConfirmModal(true);
+      return true;
+    },
+  }));
 
   // Filter presets list
   const filterPresets = [
@@ -315,7 +372,7 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
   ) => {
     e.stopPropagation();
     setActiveTextId(overlay.id);
-    if (activeTab !== "text") setActiveTab("text");
+    if (activeTool !== "text") setActiveTool("text");
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -558,12 +615,7 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
           const finalVideoUrl = await recordPromise;
           setExportProgress(100);
 
-          const nowIso = new Date().toISOString();
-          const updatedTitle = isCopy
-            ? `${photo.title} (Trimmed)`
-            : photo.title.includes("(Edited)") || photo.title.includes("(Trimmed)")
-            ? photo.title
-            : `${photo.title} (Edited)`;
+          const updatedTitle = getEditedMediaTitle(photo.title);
 
           const finalPhotoObj: Photo = {
             ...photo,
@@ -573,12 +625,14 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
             videoUrl: finalVideoUrl,
             highResUrl: finalVideoUrl,
             videoEditState: newVideoEditState,
-            date: isCopy ? nowIso : photo.date,
+            date: photo.date, // Preserve original date taken
           };
 
+          haptics.success();
           setIsExporting(false);
+          setSaveNotice(isCopy ? "Saved as new video copy!" : "Saved video changes!");
+          setTimeout(() => setSaveNotice(null), 3000);
           onSave(finalPhotoObj, isCopy);
-          onClose();
           return;
         }
       } catch (err) {
@@ -594,12 +648,7 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
 
     setExportProgress(100);
 
-    const nowIso = new Date().toISOString();
-    const updatedTitle = isCopy
-      ? `${photo.title} (Trimmed)`
-      : photo.title.includes("(Edited)") || photo.title.includes("(Trimmed)")
-      ? photo.title
-      : `${photo.title} (Edited)`;
+    const updatedTitle = getEditedMediaTitle(photo.title);
 
     const finalPhotoObj: Photo = {
       ...photo,
@@ -607,12 +656,14 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
       title: updatedTitle,
       duration: newFormattedDuration,
       videoEditState: newVideoEditState,
-      date: isCopy ? nowIso : photo.date,
+      date: photo.date, // Preserve original date taken
     };
 
+    haptics.success();
     setIsExporting(false);
+    setSaveNotice(isCopy ? "Saved as new video copy!" : "Saved video changes!");
+    setTimeout(() => setSaveNotice(null), 3000);
     onSave(finalPhotoObj, isCopy);
-    onClose();
   };
 
   // Calculate normalized trim percentages for visual timeline bar
@@ -621,50 +672,66 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
   const currentPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between overflow-hidden select-none animate-fade-in text-slate-100">
+    <div className="fixed inset-0 z-[105] bg-slate-950 flex flex-col justify-between overflow-hidden select-none animate-fade-in text-slate-100">
       {/* Top Bar Header */}
       <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between z-20">
         <div className="flex items-center gap-3">
           <button
-            onClick={onClose}
+            onClick={handleAttemptClose}
             className="p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 cursor-pointer"
             title="Cancel"
           >
             <X className="w-5 h-5" />
           </button>
           <div>
-            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+            <h3 className="text-sm font-semibold tracking-wide text-slate-100 flex items-center gap-2">
               <Film className="w-4 h-4 text-indigo-400" />
-              <span>Video Studio</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                Trim & Filter Engine
-              </span>
+              <span>Video Editor</span>
             </h3>
-            <p className="text-[11px] text-slate-400 truncate max-w-[180px] sm:max-w-xs">
-              {photo.title}
-            </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Edit / Pencil Button to open Editing Tool Dock */}
+          <button
+            onClick={() => {
+              haptics.selection();
+              if (activeTool === "none") {
+                setActiveTool("adjust");
+              } else {
+                setActiveTool("none");
+              }
+            }}
+            className={`p-2.5 rounded-xl transition-all cursor-pointer border ${
+              activeTool !== "none"
+                ? "bg-indigo-600 text-white border-indigo-400 shadow-md"
+                : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/60"
+            }`}
+            title="Toggle Editing Tools"
+            aria-label="Toggle Editing Tools"
+          >
+            <Pencil className="w-4 h-4 text-indigo-400" />
+          </button>
+
           {/* Reset button */}
           <button
             onClick={handleReset}
-            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer border border-slate-700/60"
+            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer transition-all border border-slate-700/60"
             title="Reset All Edits"
+            aria-label="Reset All Edits"
           >
-            <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-            <span className="hidden sm:inline">Reset</span>
+            <RotateCcw className="w-4 h-4 text-slate-400" />
           </button>
 
           {/* Save Action Popover Menu */}
           <div className="relative">
             <button
               onClick={() => setShowSaveOptions(!showSaveOptions)}
-              className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-indigo-600/30 border border-indigo-400/40"
+              className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-md shadow-indigo-600/30 border border-indigo-400/40 transition-all"
+              title="Save Video Options"
+              aria-label="Save Video Options"
             >
-              <Save className="w-3.5 h-3.5" />
-              <span>Save</span>
+              <Save className="w-4 h-4" />
             </button>
 
             {showSaveOptions && (
@@ -701,6 +768,12 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
 
       {/* Main Video Stage with Rotation & Live CSS Filters */}
       <div className="relative flex-1 w-full h-full bg-black flex items-center justify-center p-4 overflow-hidden">
+        {saveNotice && (
+          <div className="absolute top-4 sm:top-6 z-40 px-4 py-2.5 rounded-full bg-slate-900/95 border border-emerald-500/50 text-emerald-300 text-xs font-bold flex items-center gap-2 shadow-2xl backdrop-blur-md animate-fade-in">
+            <Check className="w-4 h-4 text-emerald-400" />
+            <span>{saveNotice}</span>
+          </div>
+        )}
         {isLoading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40">
             <Loader2 className="w-10 h-10 text-indigo-400 animate-spin" />
@@ -735,7 +808,7 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
             style={{
               filter: getCssFilter(),
             }}
-            className="max-h-[55vh] sm:max-h-[62vh] max-w-full object-contain rounded-2xl shadow-2xl border border-slate-800/80 cursor-pointer"
+            className="max-h-[55vh] sm:max-h-[62vh] max-w-full object-contain rounded-none shadow-2xl border border-slate-800/80 cursor-pointer"
             onClick={togglePlay}
           />
 
@@ -770,7 +843,7 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
                   onClick={(e) => {
                     e.stopPropagation();
                     setActiveTextId(overlay.id);
-                    if (activeTab !== "text") setActiveTab("text");
+                    if (activeTool !== "text") setActiveTool("text");
                   }}
                   onPointerDown={(e) => handleTextPointerDown(e, overlay)}
                   onPointerMove={(e) => handleTextPointerMove(e, overlay.id)}
@@ -812,6 +885,87 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
               );
             })}
 
+          {/* Interactive Sticker Overlays on Video Stage */}
+          {stickerOverlays.map((stickerItem) => {
+            const isSelected = activeStickerId === stickerItem.id;
+            return (
+              <div
+                key={stickerItem.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveStickerId(stickerItem.id);
+                  if (activeTool !== "stickers") setActiveTool("stickers");
+                }}
+                style={{
+                  left: `${stickerItem.xNormalized * 100}%`,
+                  top: `${stickerItem.yNormalized * 100}%`,
+                  transform: `translate(-50%, -50%) scale(${stickerItem.scale}) rotate(${stickerItem.rotation}deg)`,
+                }}
+                className={`absolute pointer-events-auto select-none cursor-grab active:cursor-grabbing z-30 transition-shadow touch-none ${
+                  isSelected
+                    ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-black/40 rounded-2xl p-1 bg-black/20 backdrop-blur-sm"
+                    : "p-1"
+                }`}
+              >
+                <div className="text-4xl sm:text-5xl drop-shadow-lg leading-none">
+                  {stickerItem.sticker}
+                </div>
+
+                {isSelected && (
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-xl p-1 shadow-2xl z-40">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) =>
+                          prev.map((s) => (s.id === stickerItem.id ? { ...s, scale: Math.max(0.4, s.scale - 0.15) } : s))
+                        );
+                      }}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                      title="Decrease Size"
+                    >
+                      A-
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) =>
+                          prev.map((s) => (s.id === stickerItem.id ? { ...s, scale: Math.min(3, s.scale + 0.15) } : s))
+                        );
+                      }}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                      title="Increase Size"
+                    >
+                      A+
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) =>
+                          prev.map((s) => (s.id === stickerItem.id ? { ...s, rotation: (s.rotation + 90) % 360 } : s))
+                        );
+                      }}
+                      className="p-1 hover:bg-slate-800 text-slate-300 rounded-lg cursor-pointer"
+                      title="Rotate Sticker"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStickerOverlays((prev) => prev.filter((s) => s.id !== stickerItem.id));
+                        setActiveStickerId(null);
+                      }}
+                      className="p-1 hover:bg-rose-500/20 text-rose-400 rounded-lg cursor-pointer"
+                      title="Delete Sticker"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
           {/* Floating Center Play/Pause Button */}
           {!isPlaying && !isLoading && (
             <button
@@ -829,426 +983,425 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
         </div>
       </div>
 
-      {/* Bottom Controls Area (Timeline, Trimmer & Adjustment Tools) */}
-      <div className="bg-slate-900 border-t border-slate-800 p-4 sm:p-5 space-y-4 max-w-4xl w-full mx-auto rounded-t-3xl shadow-2xl z-20">
-        {/* Editor Tab Navigation */}
-        <div className="flex items-center justify-center gap-1 sm:gap-2 p-1 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-semibold max-w-md mx-auto">
-          <button
-            onClick={() => setActiveTab("trim")}
-            className={`flex-1 py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "trim"
-                ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Scissors className="w-3.5 h-3.5" />
-            <span>Trim</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("filter")}
-            className={`flex-1 py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "filter"
-                ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Palette className="w-3.5 h-3.5" />
-            <span>Filters</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("adjust")}
-            className={`flex-1 py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "adjust"
-                ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>Adjust</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("transform")}
-            className={`flex-1 py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "transform"
-                ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <RotateCw className="w-3.5 h-3.5" />
-            <span>Speed/Audio</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("text")}
-            className={`flex-1 py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === "text"
-                ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-600/30"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Type className="w-3.5 h-3.5" />
-            <span>Text</span>
-          </button>
-        </div>
-
-        {/* Tab 1: Interactive Timeline Trimmer */}
-        {activeTab === "trim" && (
-          <div className="space-y-3 animate-fade-in pt-1">
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-300 px-1">
-              <span>Start: {formatTime(trimStart, true)}</span>
-              <span className="text-indigo-400 font-bold">
-                Trimmed: {formatTime(trimEnd - trimStart, true)}
-              </span>
-              <span>End: {formatTime(trimEnd, true)}</span>
+      {/* Bottom Area for Video Dock & Contextual Tool Panels */}
+      <div className="bg-slate-900/95 border-t border-slate-800/90 p-3 sm:p-4 shadow-2xl z-20 min-h-[130px] flex flex-col justify-center backdrop-blur-md">
+        <AnimatePresence mode="wait">
+          {activeTool === "none" && (
+            <div key="video-dock" className="w-full flex justify-center py-1">
+              <EditingToolDock activeTool={activeTool} onSelectTool={setActiveTool} />
             </div>
+          )}
 
-            {/* Interactive Timeline Track */}
-            <div
-              ref={timelineRef}
-              onPointerMove={handleTrimPointerMove}
-              onPointerUp={handleTrimPointerUp}
-              onPointerCancel={handleTrimPointerUp}
-              className="relative w-full h-12 bg-slate-950 rounded-2xl border border-slate-800 p-1 flex items-center cursor-pointer select-none touch-none"
+          {activeTool !== "none" && activeTool !== null && (
+            <motion.div
+              key={activeTool}
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              className="max-w-3xl mx-auto w-full space-y-3"
             >
-              {/* Dimmed Outside Left Region */}
-              <div
-                className="absolute left-0 top-0 bottom-0 bg-slate-950/80 rounded-l-2xl z-10 pointer-events-none"
-                style={{ width: `${startPct}%` }}
-              />
-
-              {/* Active Trimmed Region Highlight */}
-              <div
-                className="absolute top-0 bottom-0 bg-indigo-500/20 border-y-2 border-indigo-500 z-10 pointer-events-none"
-                style={{
-                  left: `${startPct}%`,
-                  width: `${Math.max(0, endPct - startPct)}%`,
-                }}
-              />
-
-              {/* Dimmed Outside Right Region */}
-              <div
-                className="absolute right-0 top-0 bottom-0 bg-slate-950/80 rounded-r-2xl z-10 pointer-events-none"
-                style={{ width: `${100 - endPct}%` }}
-              />
-
-              {/* Left Start Handle with 48px touch target */}
-              <div
-                onPointerDown={(e) => handleTrimPointerDown(e, "start")}
-                onPointerMove={handleTrimPointerMove}
-                onPointerUp={handleTrimPointerUp}
-                onPointerCancel={handleTrimPointerUp}
-                className="absolute top-0 bottom-0 w-12 -ml-6 z-30 cursor-ew-resize flex items-center justify-center group touch-none"
-                style={{ left: `${startPct}%` }}
-                title="Trim Start"
-              >
-                <div className="w-5 h-full bg-indigo-500 rounded-l-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
-                  <div className="w-1 h-5 bg-white rounded-full opacity-80" />
-                </div>
-              </div>
-
-              {/* Moving Playhead Needle Dot */}
-              <div
-                onPointerDown={(e) => handleTrimPointerDown(e, "scrub")}
-                onPointerMove={handleTrimPointerMove}
-                onPointerUp={handleTrimPointerUp}
-                onPointerCancel={handleTrimPointerUp}
-                className="absolute top-0 bottom-0 w-1 bg-white z-20 cursor-pointer shadow-md touch-none"
-                style={{ left: `${currentPct}%` }}
-              >
-                <div className="w-3 h-3 bg-white rounded-full -ml-[4px] -mt-1 shadow-lg border border-indigo-600" />
-              </div>
-
-              {/* Right End Handle with 48px touch target */}
-              <div
-                onPointerDown={(e) => handleTrimPointerDown(e, "end")}
-                onPointerMove={handleTrimPointerMove}
-                onPointerUp={handleTrimPointerUp}
-                onPointerCancel={handleTrimPointerUp}
-                className="absolute top-0 bottom-0 w-12 -ml-6 z-30 cursor-ew-resize flex items-center justify-center group touch-none"
-                style={{ left: `${endPct}%` }}
-                title="Trim End"
-              >
-                <div className="w-5 h-full bg-indigo-500 rounded-r-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
-                  <div className="w-1 h-5 bg-white rounded-full opacity-80" />
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 2: Filter Presets */}
-        {activeTab === "filter" && (
-          <div className="animate-fade-in pt-1">
-            <div className="flex gap-2.5 overflow-x-auto pb-2 scrollbar-none">
-              {filterPresets.map((f) => (
+              {/* Tool Navigation Header */}
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
                 <button
-                  key={f.id}
-                  onClick={() => applyPresetFilter(f.id)}
-                  className={`px-3.5 py-2 rounded-2xl text-xs font-bold border transition-all shrink-0 cursor-pointer ${
-                    filter === f.id
-                      ? "bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-600/30"
-                      : "bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Sliders Adjustments */}
-        {activeTab === "adjust" && (
-          <div className="grid grid-cols-2 gap-3 animate-fade-in text-xs pt-1">
-            {/* Brightness */}
-            <div className="space-y-1 bg-slate-950 p-2.5 rounded-2xl border border-slate-800">
-              <div className="flex justify-between text-slate-300 font-semibold">
-                <span>Brightness</span>
-                <span className="text-indigo-400 font-mono">{brightness}</span>
-              </div>
-              <input
-                type="range"
-                min="-100"
-                max="100"
-                value={brightness}
-                onChange={(e) => setBrightness(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 cursor-pointer"
-              />
-            </div>
-
-            {/* Contrast */}
-            <div className="space-y-1 bg-slate-950 p-2.5 rounded-2xl border border-slate-800">
-              <div className="flex justify-between text-slate-300 font-semibold">
-                <span>Contrast</span>
-                <span className="text-indigo-400 font-mono">{contrast}</span>
-              </div>
-              <input
-                type="range"
-                min="-100"
-                max="100"
-                value={contrast}
-                onChange={(e) => setContrast(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 cursor-pointer"
-              />
-            </div>
-
-            {/* Saturation */}
-            <div className="space-y-1 bg-slate-950 p-2.5 rounded-2xl border border-slate-800">
-              <div className="flex justify-between text-slate-300 font-semibold">
-                <span>Saturation</span>
-                <span className="text-indigo-400 font-mono">{saturation}</span>
-              </div>
-              <input
-                type="range"
-                min="-100"
-                max="100"
-                value={saturation}
-                onChange={(e) => setSaturation(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 cursor-pointer"
-              />
-            </div>
-
-            {/* Warmth */}
-            <div className="space-y-1 bg-slate-950 p-2.5 rounded-2xl border border-slate-800">
-              <div className="flex justify-between text-slate-300 font-semibold">
-                <span>Temperature</span>
-                <span className="text-indigo-400 font-mono">{warmth}</span>
-              </div>
-              <input
-                type="range"
-                min="-100"
-                max="100"
-                value={warmth}
-                onChange={(e) => setWarmth(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 cursor-pointer"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Tab 4: Transform, Speed & Audio */}
-        {activeTab === "transform" && (
-          <div className="flex flex-wrap items-center justify-between gap-3 animate-fade-in pt-1">
-            {/* Speed selection */}
-            <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 text-xs">
-              <span className="text-slate-400 font-semibold px-2">Speed:</span>
-              {[0.5, 1, 1.25, 1.5, 2].map((rate) => (
-                <button
-                  key={rate}
                   onClick={() => {
-                    setPlaybackRate(rate);
-                    if (videoRef.current) videoRef.current.playbackRate = rate;
+                    haptics.light();
+                    setActiveTool("none");
                   }}
-                  className={`px-2.5 py-1 rounded-xl font-bold transition-all cursor-pointer ${
-                    playbackRate === rate
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-300 hover:bg-slate-800"
-                  }`}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer border border-slate-700/60 transition-all active:scale-95"
+                  title="Return to Editing Tools"
+                  aria-label="Back to Editing Tools"
                 >
-                  {rate}x
+                  <ChevronLeft className="w-4 h-4 text-indigo-400" />
+                  <span>Tools</span>
                 </button>
-              ))}
-            </div>
 
-            {/* Rotation & Mute */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setRotation((prev) => (prev + 90) % 360)}
-                className="px-3 py-2 rounded-2xl bg-slate-950 border border-slate-800 hover:border-slate-700 text-xs font-bold text-slate-200 flex items-center gap-1.5 cursor-pointer"
-              >
-                <RotateCw className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Rotate ({rotation}°)</span>
-              </button>
+                <span className="text-xs font-bold text-slate-200 tracking-wide uppercase">
+                  {activeTool === "adjust" && "Adjust & Speed"}
+                  {activeTool === "crop" && "Timeline Trimmer"}
+                  {activeTool === "filter" && "Video Filters"}
+                  {activeTool === "text" && "Video Captions"}
+                  {activeTool === "stickers" && "Stickers"}
+                </span>
 
-              <button
-                onClick={() => {
-                  const nextMuted = !isMuted;
-                  setIsMuted(nextMuted);
-                  if (videoRef.current) videoRef.current.muted = nextMuted;
-                }}
-                className={`px-3 py-2 rounded-2xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer ${
-                  isMuted
-                    ? "bg-rose-500/20 border-rose-500/40 text-rose-300"
-                    : "bg-slate-950 border-slate-800 text-emerald-400"
-                }`}
-              >
-                {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                <span>{isMuted ? "Muted" : "Audio On"}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 5: Video Text Tool */}
-        {activeTab === "text" && (
-          <div className="space-y-3 animate-fade-in pt-1">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  const maxDuration = duration > 0 ? duration : 10;
-                  const newOverlay: TextOverlay = {
-                    id: `vtext-${Date.now()}`,
-                    text: "Video Caption",
-                    xNormalized: 0.5,
-                    yNormalized: 0.8,
-                    scale: 1,
-                    rotation: 0,
-                    fontFamily: "sans",
-                    color: "#ffffff",
-                    opacity: 1,
-                    alignment: "center",
-                    style: "background",
-                    bgColor: "rgba(0,0,0,0.75)",
-                    startTime: 0,
-                    endTime: maxDuration,
-                  };
-                  setTextOverlays((prev) => [...prev, newOverlay]);
-                  setActiveTextId(newOverlay.id);
-                }}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add Text</span>
-              </button>
-
-              {activeTextId && (
-                <input
-                  type="text"
-                  value={
-                    textOverlays.find((t) => t.id === activeTextId)?.text || ""
-                  }
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setTextOverlays((prev) =>
-                      prev.map((t) =>
-                        t.id === activeTextId ? { ...t, text: val } : t
-                      )
-                    );
-                  }}
-                  placeholder="Type caption text..."
-                  className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-slate-100 focus:outline-none focus:border-indigo-500"
-                />
-              )}
-            </div>
-
-            {/* Timing Controls for Active Video Text Overlay */}
-            {activeTextId && (
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                  <span>Display Range in Video:</span>
-                  <button
-                    onClick={() => {
-                      setTextOverlays((prev) => prev.filter((t) => t.id !== activeTextId));
-                      setActiveTextId(null);
-                    }}
-                    className="text-rose-400 hover:text-rose-300 flex items-center gap-1 text-[11px] cursor-pointer"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    <span>Delete Caption</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="space-y-1">
-                    <span className="text-slate-400">
-                      Show at: {formatTime(textOverlays.find((t) => t.id === activeTextId)?.startTime || 0, true)}
-                    </span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={duration || 10}
-                      step={0.1}
-                      value={textOverlays.find((t) => t.id === activeTextId)?.startTime || 0}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setTextOverlays((prev) =>
-                          prev.map((t) =>
-                            t.id === activeTextId
-                              ? { ...t, startTime: Math.min(val, (t.endTime || duration) - 0.5) }
-                              : t
-                          )
-                        );
-                      }}
-                      className="w-full accent-indigo-500 cursor-pointer"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <span className="text-slate-400">
-                      Hide at: {formatTime(textOverlays.find((t) => t.id === activeTextId)?.endTime || duration || 10, true)}
-                    </span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={duration || 10}
-                      step={0.1}
-                      value={textOverlays.find((t) => t.id === activeTextId)?.endTime || duration || 10}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setTextOverlays((prev) =>
-                          prev.map((t) =>
-                            t.id === activeTextId
-                              ? { ...t, endTime: Math.max(val, (t.startTime || 0) + 0.5) }
-                              : t
-                          )
-                        );
-                      }}
-                      className="w-full accent-indigo-500 cursor-pointer"
-                    />
-                  </div>
-                </div>
+                <div className="w-16" />
               </div>
-            )}
-          </div>
-        )}
+
+              {/* ADJUST TOOL (Sliders + Speed & Audio) */}
+              {activeTool === "adjust" && (
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center justify-center gap-1.5 overflow-x-auto pb-1 scrollbar-none max-w-xl mx-auto">
+                    {[
+                      { id: "brightness", label: "Brightness", val: brightness },
+                      { id: "contrast", label: "Contrast", val: contrast },
+                      { id: "saturation", label: "Saturation", val: saturation },
+                      { id: "warmth", label: "Temperature", val: warmth },
+                      { id: "speed", label: "Speed", val: `${playbackRate}x` },
+                      { id: "volume", label: "Audio", val: isMuted ? "Muted" : "On" },
+                    ].map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          haptics.selection();
+                          setSelectedAdjustment(p.id as any);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer shrink-0 border ${
+                          selectedAdjustment === p.id
+                            ? "bg-indigo-600 text-white border-indigo-400 shadow-md"
+                            : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
+                        }`}
+                      >
+                        <span>{p.label}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedAdjustment === "speed" ? (
+                    <div className="flex items-center justify-center gap-2 max-w-md mx-auto bg-slate-950 p-2.5 rounded-2xl border border-slate-800">
+                      <span className="text-xs text-slate-400 font-semibold mr-1">Playback Speed:</span>
+                      {[0.5, 1, 1.25, 1.5, 2].map((rate) => (
+                        <button
+                          key={rate}
+                          onClick={() => {
+                            setPlaybackRate(rate);
+                            if (videoRef.current) videoRef.current.playbackRate = rate;
+                          }}
+                          className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            playbackRate === rate
+                              ? "bg-indigo-600 text-white shadow-sm"
+                              : "text-slate-300 hover:bg-slate-800"
+                          }`}
+                        >
+                          {rate}x
+                        </button>
+                      ))}
+                    </div>
+                  ) : selectedAdjustment === "volume" ? (
+                    <div className="flex items-center justify-center gap-3 max-w-md mx-auto bg-slate-950 p-2.5 rounded-2xl border border-slate-800">
+                      <button
+                        onClick={() => {
+                          const nextMuted = !isMuted;
+                          setIsMuted(nextMuted);
+                          if (videoRef.current) videoRef.current.muted = nextMuted;
+                        }}
+                        className={`px-4 py-2 rounded-2xl border text-xs font-bold flex items-center gap-2 cursor-pointer ${
+                          isMuted
+                            ? "bg-rose-500/20 border-rose-500/40 text-rose-300"
+                            : "bg-slate-900 border-slate-700 text-emerald-400"
+                        }`}
+                      >
+                        {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                        <span>{isMuted ? "Video Muted" : "Audio Enabled"}</span>
+                      </button>
+                      <button
+                        onClick={() => setRotation((prev) => (prev + 90) % 360)}
+                        className="px-4 py-2 rounded-2xl bg-slate-900 border border-slate-700 text-xs font-bold text-slate-200 flex items-center gap-2 cursor-pointer"
+                      >
+                        <RotateCw className="w-4 h-4 text-indigo-400" />
+                        <span>Rotate ({rotation}°)</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="max-w-md mx-auto bg-slate-950 p-3 rounded-2xl border border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-200">
+                        <span className="capitalize">{selectedAdjustment}</span>
+                        <span className="font-mono text-indigo-400">
+                          {selectedAdjustment === "brightness" && (brightness > 0 ? `+${brightness}` : brightness)}
+                          {selectedAdjustment === "contrast" && (contrast > 0 ? `+${contrast}` : contrast)}
+                          {selectedAdjustment === "saturation" && (saturation > 0 ? `+${saturation}` : saturation)}
+                          {selectedAdjustment === "warmth" && (warmth > 0 ? `+${warmth}` : warmth)}
+                        </span>
+                      </div>
+
+                      <input
+                        type="range"
+                        min={-100}
+                        max={100}
+                        value={
+                          selectedAdjustment === "brightness"
+                            ? brightness
+                            : selectedAdjustment === "contrast"
+                            ? contrast
+                            : selectedAdjustment === "saturation"
+                            ? saturation
+                            : warmth
+                        }
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          if (selectedAdjustment === "brightness") setBrightness(val);
+                          else if (selectedAdjustment === "contrast") setContrast(val);
+                          else if (selectedAdjustment === "saturation") setSaturation(val);
+                          else if (selectedAdjustment === "warmth") setWarmth(val);
+                        }}
+                        className="w-full accent-indigo-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* CROP / TRIM TOOL */}
+              {activeTool === "crop" && (
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-300 px-1">
+                    <span>Start: {formatTime(trimStart, true)}</span>
+                    <span className="text-indigo-400 font-bold">
+                      Trimmed: {formatTime(trimEnd - trimStart, true)}
+                    </span>
+                    <span>End: {formatTime(trimEnd, true)}</span>
+                  </div>
+
+                  <div
+                    ref={timelineRef}
+                    onPointerMove={handleTrimPointerMove}
+                    onPointerUp={handleTrimPointerUp}
+                    onPointerCancel={handleTrimPointerUp}
+                    className="relative w-full h-12 bg-slate-950 rounded-2xl border border-slate-800 p-1 flex items-center cursor-pointer select-none touch-none"
+                  >
+                    <div
+                      className="absolute left-0 top-0 bottom-0 bg-slate-950/80 rounded-l-2xl z-10 pointer-events-none"
+                      style={{ width: `${startPct}%` }}
+                    />
+
+                    <div
+                      className="absolute top-0 bottom-0 bg-indigo-500/20 border-y-2 border-indigo-500 z-10 pointer-events-none"
+                      style={{
+                        left: `${startPct}%`,
+                        width: `${Math.max(0, endPct - startPct)}%`,
+                      }}
+                    />
+
+                    <div
+                      className="absolute right-0 top-0 bottom-0 bg-slate-950/80 rounded-r-2xl z-10 pointer-events-none"
+                      style={{ width: `${100 - endPct}%` }}
+                    />
+
+                    <div
+                      onPointerDown={(e) => handleTrimPointerDown(e, "start")}
+                      onPointerMove={handleTrimPointerMove}
+                      onPointerUp={handleTrimPointerUp}
+                      onPointerCancel={handleTrimPointerUp}
+                      className="absolute top-0 bottom-0 w-12 -ml-6 z-30 cursor-ew-resize flex items-center justify-center group touch-none"
+                      style={{ left: `${startPct}%` }}
+                      title="Trim Start"
+                    >
+                      <div className="w-5 h-full bg-indigo-500 rounded-l-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+                        <div className="w-1 h-5 bg-white rounded-full opacity-80" />
+                      </div>
+                    </div>
+
+                    <div
+                      onPointerDown={(e) => handleTrimPointerDown(e, "scrub")}
+                      onPointerMove={handleTrimPointerMove}
+                      onPointerUp={handleTrimPointerUp}
+                      onPointerCancel={handleTrimPointerUp}
+                      className="absolute top-0 bottom-0 w-1 bg-white z-20 cursor-pointer shadow-md touch-none"
+                      style={{ left: `${currentPct}%` }}
+                    >
+                      <div className="w-3 h-3 bg-white rounded-full -ml-[4px] -mt-1 shadow-lg border border-indigo-600" />
+                    </div>
+
+                    <div
+                      onPointerDown={(e) => handleTrimPointerDown(e, "end")}
+                      onPointerMove={handleTrimPointerMove}
+                      onPointerUp={handleTrimPointerUp}
+                      onPointerCancel={handleTrimPointerUp}
+                      className="absolute top-0 bottom-0 w-12 -ml-6 z-30 cursor-ew-resize flex items-center justify-center group touch-none"
+                      style={{ left: `${endPct}%` }}
+                      title="Trim End"
+                    >
+                      <div className="w-5 h-full bg-indigo-500 rounded-r-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+                        <div className="w-1 h-5 bg-white rounded-full opacity-80" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* FILTER TOOL */}
+              {activeTool === "filter" && (
+                <div className="flex gap-2.5 overflow-x-auto pb-2 scrollbar-none w-full">
+                  {filterPresets.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => {
+                        haptics.selection();
+                        applyPresetFilter(f.id);
+                      }}
+                      className={`flex-shrink-0 px-4 py-2 rounded-2xl border text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                        filter === f.id
+                          ? "bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30"
+                          : "bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <span>{f.label}</span>
+                      {filter === f.id && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* TEXT / CAPTION TOOL */}
+              {activeTool === "text" && (
+                <div className="space-y-3 pt-1 max-w-xl mx-auto">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        haptics.selection();
+                        const maxDuration = duration > 0 ? duration : 10;
+                        const newOverlay: TextOverlay = {
+                          id: `vtext-${Date.now()}`,
+                          text: "Video Caption",
+                          xNormalized: 0.5,
+                          yNormalized: 0.8,
+                          scale: 1,
+                          rotation: 0,
+                          fontFamily: "sans",
+                          color: "#ffffff",
+                          opacity: 1,
+                          alignment: "center",
+                          style: "background",
+                          bgColor: "rgba(0,0,0,0.75)",
+                          startTime: 0,
+                          endTime: maxDuration,
+                        };
+                        setTextOverlays((prev) => [...prev, newOverlay]);
+                        setActiveTextId(newOverlay.id);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer active:scale-95"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add Caption</span>
+                    </button>
+
+                    {activeTextId && (
+                      <input
+                        type="text"
+                        value={textOverlays.find((t) => t.id === activeTextId)?.text || ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setTextOverlays((prev) =>
+                            prev.map((t) => (t.id === activeTextId ? { ...t, text: val } : t))
+                          );
+                        }}
+                        placeholder="Type caption text..."
+                        className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-slate-100 focus:outline-none focus:border-indigo-500"
+                      />
+                    )}
+                  </div>
+
+                  {activeTextId && (
+                    <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                        <span>Timing Range:</span>
+                        <button
+                          onClick={() => {
+                            setTextOverlays((prev) => prev.filter((t) => t.id !== activeTextId));
+                            setActiveTextId(null);
+                          }}
+                          className="text-rose-400 hover:text-rose-300 flex items-center gap-1 text-[11px] cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div className="space-y-1">
+                          <span className="text-slate-400">
+                            Show: {formatTime(textOverlays.find((t) => t.id === activeTextId)?.startTime || 0, true)}
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={duration || 10}
+                            step={0.1}
+                            value={textOverlays.find((t) => t.id === activeTextId)?.startTime || 0}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              setTextOverlays((prev) =>
+                                prev.map((t) =>
+                                  t.id === activeTextId
+                                    ? { ...t, startTime: Math.min(val, (t.endTime || duration) - 0.5) }
+                                    : t
+                                )
+                              );
+                            }}
+                            className="w-full accent-indigo-500 cursor-pointer"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-slate-400">
+                            Hide: {formatTime(textOverlays.find((t) => t.id === activeTextId)?.endTime || duration || 10, true)}
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={duration || 10}
+                            step={0.1}
+                            value={textOverlays.find((t) => t.id === activeTextId)?.endTime || duration || 10}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              setTextOverlays((prev) =>
+                                prev.map((t) =>
+                                  t.id === activeTextId
+                                    ? { ...t, endTime: Math.max(val, (t.startTime || 0) + 0.5) }
+                                    : t
+                                )
+                              );
+                            }}
+                            className="w-full accent-indigo-500 cursor-pointer"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STICKERS TOOL */}
+              {activeTool === "stickers" && (
+                <div className="space-y-2 max-w-xl mx-auto">
+                  <p className="text-[11px] text-slate-400 text-center font-medium">
+                    Tap a sticker to add it to your video
+                  </p>
+                  <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none justify-start sm:justify-center">
+                    {[
+                      "✨", "❤️", "🔥", "😎", "⭐", "🎉", "🌈", "🌸", "👑", "🚀",
+                      "💡", "🎨", "📸", "☀️", "🌴", "☕", "🏆", "💯", "✌️", "🍀"
+                    ].map((stickerEmoji) => (
+                      <button
+                        key={stickerEmoji}
+                        onClick={() => {
+                          haptics.selection();
+                          const newSticker: StickerOverlay = {
+                            id: `vsticker-${Date.now()}`,
+                            sticker: stickerEmoji,
+                            xNormalized: 0.5,
+                            yNormalized: 0.5,
+                            scale: 1,
+                            rotation: 0,
+                          };
+                          setStickerOverlays((prev) => [...prev, newSticker]);
+                          setActiveStickerId(newSticker.id);
+                        }}
+                        className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500 hover:bg-slate-800/80 text-2xl flex items-center justify-center transition-all cursor-pointer active:scale-90 shrink-0"
+                      >
+                        {stickerEmoji}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Export / Saving Progress Overlay */}
       {isExporting && (
-        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center gap-4 p-6 text-center animate-fade-in">
+        <div className="fixed inset-0 z-[115] bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center gap-4 p-6 text-center animate-fade-in">
           <Loader2 className="w-12 h-12 text-indigo-400 animate-spin" />
           <div className="space-y-1">
             <h4 className="text-base font-bold text-slate-100">Processing Video Edits...</h4>
@@ -1264,6 +1417,40 @@ export const VideoEditorModal: React.FC<VideoEditorModalProps> = ({
           </div>
         </div>
       )}
+
+      {/* Discard Video Edits Confirmation Modal */}
+      {showDiscardConfirmModal && (
+        <div className="fixed inset-0 z-[120] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-2xl text-left">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-3">
+              <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">Quit Editing?</h3>
+                <p className="text-[11px] text-slate-400">Do you want to discard edits and exit, or keep editing?</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setShowDiscardConfirmModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer transition-all border border-slate-700/60"
+              >
+                Keep Editing
+              </button>
+              <button
+                onClick={() => {
+                  setShowDiscardConfirmModal(false);
+                  onClose();
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md cursor-pointer transition-all"
+              >
+                Discard & Exit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-};
+});

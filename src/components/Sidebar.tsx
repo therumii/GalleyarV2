@@ -10,6 +10,7 @@ import {
   Trash2,
   Plus,
   Zap,
+  X,
 } from "lucide-react";
 import { ViewMode } from "../types";
 
@@ -97,9 +98,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const secondaryNavItems = [
     {
       id: "hidden" as ViewMode,
-      label: "Private Vault",
+      label: "Personal Diaries",
       icon: Lock,
-      count: hiddenCount > 0 ? hiddenCount : null,
+      count: null,
     },
     {
       id: "trash" as ViewMode,
@@ -117,7 +118,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onClick={onClose}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
-          className="fixed inset-0 z-30 bg-slate-950/60 backdrop-blur-xs cursor-pointer transition-opacity animate-fade-in"
+          onTouchMove={(e) => e.preventDefault()}
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md cursor-pointer transition-opacity animate-fade-in lg:hidden touch-none"
           title="Click anywhere on the right to close sidebar"
         />
       )}
@@ -125,34 +127,43 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <aside
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        className={`fixed lg:static inset-y-0 left-0 z-40 w-72 bg-slate-900/95 backdrop-blur-xl border-r border-slate-800/80 flex flex-col justify-between transition-transform duration-300 ${
+        className={`fixed lg:static inset-y-0 left-0 z-[60] lg:z-auto w-72 bg-slate-900/95 backdrop-blur-xl border-r border-slate-800/80 flex flex-col justify-between transition-transform duration-300 ${
           isOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         }`}
       >
-      {/* App Branding */}
+      {/* App Branding Header */}
       <div className="p-5 flex flex-col gap-4 border-b border-slate-800/60">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 p-0.5 shadow-xl shadow-indigo-500/25 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 p-0.5 shadow-xl shadow-indigo-500/25 flex items-center justify-center shrink-0">
               <div className="w-full h-full bg-slate-950 rounded-[14px] flex items-center justify-center">
-                <Zap className="w-6 h-6 text-indigo-400" />
+                <Zap className="w-5 h-5 text-indigo-400" />
               </div>
             </div>
             <div>
-              <h1 className="font-black text-slate-100 text-2xl tracking-tight flex items-center gap-1.5">
+              <h1 className="font-black text-slate-100 text-xl tracking-tight flex items-center gap-1.5">
                 Galleyar
               </h1>
-              <p className="text-xs font-medium text-slate-400">Smart Photos & AI Gallery</p>
+              <p className="text-[11px] font-medium text-slate-400">Smart Photos & AI Gallery</p>
             </div>
           </div>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 cursor-pointer transition-colors lg:hidden"
+              title="Close Menu"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {/* Upload Button */}
         <button
           onClick={onOpenUpload}
-          className="w-full py-3 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+          className="w-full py-2.5 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
         >
-          <Plus className="w-5 h-5" />
+          <Plus className="w-4 h-4" />
           <span>Upload Photos</span>
         </button>
       </div>

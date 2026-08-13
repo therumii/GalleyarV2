@@ -9,7 +9,8 @@ import {
   Share2,
   Check,
 } from "lucide-react";
-import { Photo, GridDensity, TimelineZoom } from "../types";
+import { Photo, GridDensity, TimelineZoom, SortByOption, SortOrderOption } from "../types";
+import { haptics } from "../utils/haptics";
 
 interface TimelineGridProps {
   photos: Photo[];
@@ -21,6 +22,8 @@ interface TimelineGridProps {
   onToggleSelectPhoto: (photoId: string) => void;
   onOpenPhoto: (photo: Photo) => void;
   onToggleFavorite: (photoId: string, e: React.MouseEvent) => void;
+  sortBy?: SortByOption;
+  sortOrder?: SortOrderOption;
 }
 
 interface PhotoGridItemProps {
@@ -58,11 +61,15 @@ const PhotoGridItem: React.FC<PhotoGridItemProps> = ({
     if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     holdTimerRef.current = setTimeout(() => {
       isHoldRef.current = true;
-      onToggleSelectPhoto(photo.id);
+      if (hasSelectionMode) {
+        onOpenPhoto(photo);
+      } else {
+        onToggleSelectPhoto(photo.id);
+      }
       if (typeof navigator !== "undefined" && navigator.vibrate) {
         navigator.vibrate(40);
       }
-    }, 450);
+    }, 420);
   };
 
   const cancelHold = () => {
@@ -87,7 +94,12 @@ const PhotoGridItem: React.FC<PhotoGridItemProps> = ({
       isHoldRef.current = false;
       return;
     }
-    onOpenPhoto(photo);
+    if (hasSelectionMode) {
+      haptics.selection();
+      onToggleSelectPhoto(photo.id);
+    } else {
+      onOpenPhoto(photo);
+    }
   };
 
   return (
@@ -107,6 +119,27 @@ const PhotoGridItem: React.FC<PhotoGridItemProps> = ({
           : "border-slate-800/80 hover:border-slate-600 hover:shadow-xl hover:-translate-y-0.5"
       }`}
     >
+      {/* Selection Checkbox Badge */}
+      {(hasSelectionMode || isSelected) && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            haptics.selection();
+            onToggleSelectPhoto(photo.id);
+          }}
+          className="absolute top-2 left-2 z-20 p-0.5 rounded-full bg-slate-950/80 border border-slate-700/80 backdrop-blur-md cursor-pointer"
+        >
+          <div
+            className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors ${
+              isSelected
+                ? "bg-indigo-600 text-white"
+                : "bg-slate-800/80 text-slate-400 border border-slate-600"
+            }`}
+          >
+            <Check className="w-3 h-3 stroke-[3]" />
+          </div>
+        </div>
+      )}
       {photo.isVideo && isHovered && !hasVideoError ? (
         <video
           src={videoSrc}
@@ -193,6 +226,8 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
   onToggleSelectPhoto,
   onOpenPhoto,
   onToggleFavorite,
+  sortBy = "date",
+  sortOrder = "desc",
 }) => {
   const [internalColumnCount, setInternalColumnCount] = useState<number>(
     gridDensity === "compact" ? 5 : gridDensity === "comfort" ? 4 : 3
@@ -228,7 +263,9 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
         })
         .catch(() => {});
     } else {
-      navigator.clipboard.writeText(url);
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(url).catch(() => {});
+      }
       setShareToastText(`Copied link for "${photo.title}"`);
       setTimeout(() => setShareToastText(null), 2500);
     }
@@ -319,10 +356,70 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
 
   // Group photos according to sorted order:
   const getGroupedPhotos = () => {
+    // Deduplicate photos by ID while preserving input array sort order
+    const uniqueMap = new Map<string, Photo>();
+    photos.forEach((p) => {
+      if (p && p.id && !uniqueMap.has(p.id)) {
+        uniqueMap.set(p.id, p);
+      }
+    });
+    const uniquePhotos = Array.from(uniqueMap.values());
+
+    if (uniquePhotos.length === 0) return [];
+
     if (timelineZoom === "all") {
-      return [{ groupKey: "All Media", locationSub: `${photos.length} Media Items`, photos }];
+      return [{ groupKey: "All Media", locationSub: `${uniquePhotos.length} Media Items`, photos: uniquePhotos }];
     }
 
+    if (sortBy === "title") {
+      // Group photos in dictionary form by starting character
+      const groups: { groupKey: string; locationSub: string; photos: Photo[] }[] = [];
+      const groupMap = new Map<string, { locationSub: string; photos: Photo[] }>();
+
+      uniquePhotos.forEach((photo) => {
+        const titleTrimmed = (photo.title || "").trim();
+        const firstChar = titleTrimmed ? titleTrimmed[0].toUpperCase() : "#";
+        const isLetter = /^[A-Z]$/.test(firstChar);
+        const groupKey = isLetter ? firstChar : "#";
+        const locationSub = "Dictionary Index • Alphabetical";
+
+        let existing = groupMap.get(groupKey);
+        if (!existing) {
+          existing = { locationSub, photos: [] };
+          groupMap.set(groupKey, existing);
+          groups.push({ groupKey, locationSub, photos: existing.photos });
+        }
+        existing.photos.push(photo);
+      });
+
+      return groups;
+    }
+
+    if (sortBy === "category") {
+      const groups: { groupKey: string; locationSub: string; photos: Photo[] }[] = [];
+      const groupMap = new Map<string, { locationSub: string; photos: Photo[] }>();
+
+      uniquePhotos.forEach((photo) => {
+        const groupKey = photo.category || "General";
+        const locationSub = "Category Collection";
+
+        let existing = groupMap.get(groupKey);
+        if (!existing) {
+          existing = { locationSub, photos: [] };
+          groupMap.set(groupKey, existing);
+          groups.push({ groupKey, locationSub, photos: existing.photos });
+        }
+        existing.photos.push(photo);
+      });
+
+      return groups;
+    }
+
+    if (sortBy === "fileSize") {
+      return [{ groupKey: "Sorted by File Size", locationSub: `${uniquePhotos.length} Media Items`, photos: uniquePhotos }];
+    }
+
+    // Default: Sort by Date Taken
     let groupingMode: "days" | "months" | "years" = "days";
     if (timelineZoom && (timelineZoom === "years" || timelineZoom === "months" || timelineZoom === "days")) {
       groupingMode = timelineZoom;
@@ -335,15 +432,7 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
     const groups: { groupKey: string; locationSub: string; photos: Photo[] }[] = [];
     const groupMap = new Map<string, { locationSub: string; photos: Photo[] }>();
 
-    // Deduplicate photos by ID while preserving input array sort order
-    const uniqueMap = new Map<string, Photo>();
-    photos.forEach((p) => {
-      if (p && p.id && !uniqueMap.has(p.id)) {
-        uniqueMap.set(p.id, p);
-      }
-    });
-
-    Array.from(uniqueMap.values()).forEach((photo) => {
+    uniquePhotos.forEach((photo) => {
       let groupKey = photo.day || "Recent";
       let locationSub = photo.location?.city
         ? `${photo.location.city}, ${photo.location.country}`
@@ -356,7 +445,18 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
         groupKey = photo.month ? photo.month : "Monthly View";
         locationSub = `${photo.year || ""} Monthly Collection`;
       } else {
-        groupKey = photo.day ? photo.day : "Date View";
+        if (photo.day) {
+          groupKey = photo.day;
+        } else if (photo.date) {
+          const parsed = new Date(photo.date);
+          if (!isNaN(parsed.getTime())) {
+            groupKey = parsed.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+          } else {
+            groupKey = "Date View";
+          }
+        } else {
+          groupKey = "Date View";
+        }
       }
 
       let existing = groupMap.get(groupKey);

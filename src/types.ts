@@ -27,6 +27,10 @@ export interface TaggedPerson {
   id: string;
   name: string;
   faceBox?: FaceLocation;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface PhotoExif {
@@ -70,6 +74,17 @@ export interface TextOverlay {
   endTime?: number;   // for video text timing in seconds
 }
 
+export interface StickerOverlay {
+  id: string;
+  sticker: string; // Emoji, badge, or icon symbol
+  xNormalized: number;
+  yNormalized: number;
+  scale: number;
+  rotation: number;
+  startTime?: number; // for video timing
+  endTime?: number;   // for video timing
+}
+
 export interface PhotoEditState {
   brightness: number; // -100 to 100
   contrast: number; // -100 to 100
@@ -84,6 +99,7 @@ export interface PhotoEditState {
   drawings?: PhotoDrawingPath[];
   erasedRegions?: { x: number; y: number; radius: number }[];
   textOverlays?: TextOverlay[];
+  stickerOverlays?: StickerOverlay[];
 }
 
 export interface VideoEditState {
@@ -98,11 +114,13 @@ export interface VideoEditState {
   rotation: number;
   isMuted: boolean;
   textOverlays?: TextOverlay[];
+  stickerOverlays?: StickerOverlay[];
 }
 
 export interface Photo {
   id: string;
   title: string;
+  description?: string;
   url: string;
   highResUrl: string;
   date: string; // ISO string e.g. "2026-07-28T14:30:00Z"
@@ -121,9 +139,11 @@ export interface Photo {
   fileSize: string;
   resolution: string;
   exif: PhotoExif;
+  camera?: string;
   location: PhotoLocation;
   tags: string[];
   people: TaggedPerson[];
+  faces?: TaggedPerson[];
   ocrText?: string;
   dominantColors?: string[];
   editedState?: PhotoEditState;
@@ -167,6 +187,18 @@ export interface CloudSyncQuota {
   autoSyncEnabled: boolean;
   lastSyncTime: string;
   syncState: "idle" | "syncing" | "error" | "paused";
+}
+
+export interface NavState {
+  view: ViewMode;
+  albumId?: string | null;
+  personId?: string | null;
+  storyId?: string | null;
+  city?: string | null;
+  vaultAddModal?: boolean;
+  activePhotoId?: string | null;
+  activeEditorId?: string | null;
+  isSettingsOpen?: boolean;
 }
 
 export type ViewMode =

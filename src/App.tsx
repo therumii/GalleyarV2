@@ -1,20 +1,23 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Check, CheckCheck, Folder, Heart, Plus, Share2, Trash2, X } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
-import { Header } from "./components/Header";
+import { Header, HeaderRef } from "./components/Header";
 import { BottomNav } from "./components/BottomNav";
 import { TimelineGrid } from "./components/TimelineGrid";
-import { AlbumsView } from "./components/AlbumsView";
-import { MemoriesView } from "./components/MemoriesView";
-import { PeopleView } from "./components/PeopleView";
-import { PlacesMapView } from "./components/PlacesMapView";
+import { AlbumsView, AlbumsViewRef } from "./components/AlbumsView";
+import { MemoriesView, MemoriesViewRef } from "./components/MemoriesView";
+import { PeopleView, PeopleViewRef } from "./components/PeopleView";
+import { PlacesMapView, PlacesMapViewRef } from "./components/PlacesMapView";
 import { PhotoLightbox } from "./components/PhotoLightbox";
-import { PhotoEditorModal } from "./components/PhotoEditorModal";
-import { VideoEditorModal } from "./components/VideoEditorModal";
+import { PhotoEditorModal, PhotoEditorRef } from "./components/PhotoEditorModal";
+import { VideoEditorModal, VideoEditorRef } from "./components/VideoEditorModal";
 import { UploadModal } from "./components/UploadModal";
-import { HiddenVaultModal } from "./components/HiddenVaultModal";
+import { HiddenVaultModal, HiddenVaultRef } from "./components/HiddenVaultModal";
+import { MediaViewerRef } from "./components/MediaViewer";
 import { TrashView } from "./components/TrashView";
+import { AddToAlbumVaultModal } from "./components/AddToAlbumVaultModal";
+import { BatchShareModal } from "./components/BatchShareModal";
 
 import {
   Photo,
@@ -22,6 +25,7 @@ import {
   PersonCluster,
   MemoryStory,
   ViewMode,
+  NavState,
   TimelineZoom,
   GridDensity,
   SortByOption,
@@ -51,7 +55,127 @@ export default function App() {
   const [stories, setStories] = useState<MemoryStory[]>(INITIAL_STORIES);
 
   // Navigation & View State
-  const [currentView, setCurrentView] = useState<ViewMode>("photos");
+  const [navState, setNavState] = useState<NavState>({
+    view: "photos",
+    albumId: null,
+    personId: null,
+    storyId: null,
+    city: null,
+    activePhotoId: null,
+    activeEditorId: null,
+    isSettingsOpen: false,
+  });
+
+  const navHistoryRef = useRef<NavState[]>([]);
+
+  const currentView = navState.view;
+
+  const navigateTo = useCallback(
+    (target: Partial<NavState>, scopedList?: Photo[] | null) => {
+      setNavState((current) => {
+        const nextView = target.view !== undefined ? target.view : current.view;
+        const isViewChanging = nextView !== current.view;
+
+        const nextState: NavState = {
+          view: nextView,
+          albumId:
+            target.albumId !== undefined
+              ? target.albumId
+              : isViewChanging
+              ? null
+              : current.albumId,
+          personId:
+            target.personId !== undefined
+              ? target.personId
+              : isViewChanging
+              ? null
+              : current.personId,
+          storyId:
+            target.storyId !== undefined
+              ? target.storyId
+              : isViewChanging
+              ? null
+              : current.storyId,
+          city:
+            target.city !== undefined
+              ? target.city
+              : isViewChanging
+              ? null
+              : current.city,
+          activePhotoId:
+            target.activePhotoId !== undefined
+              ? target.activePhotoId
+              : isViewChanging
+              ? null
+              : current.activePhotoId,
+          activeEditorId:
+            target.activeEditorId !== undefined
+              ? target.activeEditorId
+              : isViewChanging
+              ? null
+              : current.activeEditorId,
+          isSettingsOpen:
+            target.isSettingsOpen !== undefined
+              ? target.isSettingsOpen
+              : isViewChanging
+              ? false
+              : current.isSettingsOpen,
+        };
+
+        const isSameState =
+          current.view === nextState.view &&
+          (current.albumId || null) === (nextState.albumId || null) &&
+          (current.personId || null) === (nextState.personId || null) &&
+          (current.storyId || null) === (nextState.storyId || null) &&
+          (current.city || null) === (nextState.city || null) &&
+          (current.activePhotoId || null) === (nextState.activePhotoId || null) &&
+          (current.activeEditorId || null) === (nextState.activeEditorId || null) &&
+          Boolean(current.isSettingsOpen) === Boolean(nextState.isSettingsOpen);
+
+        if (isSameState) return current;
+
+        // If navigating to root Home Screen ("photos" with no sub-filter), clear navigation stack
+        const isTargetRootHome =
+          nextState.view === "photos" &&
+          !nextState.albumId &&
+          !nextState.personId &&
+          !nextState.storyId &&
+          !nextState.city &&
+          !nextState.activePhotoId &&
+          !nextState.activeEditorId;
+
+        if (isTargetRootHome) {
+          navHistoryRef.current = [];
+        } else {
+          navHistoryRef.current.push({ ...current });
+          try {
+            window.history.pushState(
+              { navDepth: navHistoryRef.current.length },
+              ""
+            );
+          } catch {}
+        }
+
+        if (scopedList !== undefined) {
+          setActiveLightboxList(scopedList);
+        }
+
+        setMatchedPhotoIds(null);
+        setSearchQuery("");
+
+        return nextState;
+      });
+    },
+    []
+  );
+
+  const handleSelectPhotoInViewer = useCallback((photo: Photo) => {
+    setNavState((current) => ({
+      ...current,
+      activePhotoId: photo.id,
+    }));
+  }, []);
+
   const [timelineZoom, setTimelineZoom] = useState<TimelineZoom>("days");
 
   // Grid Density State & Persistence
@@ -128,6 +252,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isAlbumOpened, setIsAlbumOpened] = useState(false);
   const [showAddToAlbumModal, setShowAddToAlbumModal] = useState(false);
+  const [showBatchShareModal, setShowBatchShareModal] = useState(false);
   const [batchToastNotice, setBatchToastNotice] = useState<string | null>(null);
 
   // Reset album opened state when switching main views
@@ -136,6 +261,21 @@ export default function App() {
       setIsAlbumOpened(false);
     }
   }, [currentView]);
+
+  // Lock background body scroll when sidebar is open
+  useEffect(() => {
+    if (sidebarOpen) {
+      document.body.style.overflow = "hidden";
+      document.body.style.touchAction = "none";
+    } else {
+      document.body.style.overflow = "";
+      document.body.style.touchAction = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+      document.body.style.touchAction = "";
+    };
+  }, [sidebarOpen]);
 
   // Swipe gesture for main tab switching & left-to-right sidebar menu trigger
   const MAIN_TABS: ViewMode[] = [
@@ -147,6 +287,18 @@ export default function App() {
   const [tabDragStart, setTabDragStart] = useState<{ x: number; y: number } | null>(
     null
   );
+
+  const activeLightboxPhoto = useMemo(() => {
+    return navState.activePhotoId
+      ? photos.find((p) => p.id === navState.activePhotoId) || null
+      : null;
+  }, [navState.activePhotoId, photos]);
+
+  const activeEditorPhoto = useMemo(() => {
+    return navState.activeEditorId
+      ? photos.find((p) => p.id === navState.activeEditorId) || null
+      : null;
+  }, [navState.activeEditorId, photos]);
 
   const handleTabTouchStart = (e: React.TouchEvent) => {
     // Disable section switching gesture if an album is opened or modals are active
@@ -189,9 +341,7 @@ export default function App() {
           // In other sections, swiping right navigates to previous tab
           const currentIdx = MAIN_TABS.indexOf(currentView);
           if (currentIdx > 0) {
-            setCurrentView(MAIN_TABS[currentIdx - 1]);
-            setMatchedPhotoIds(null);
-            setSearchQuery("");
+            navigateTo({ view: MAIN_TABS[currentIdx - 1] });
           }
         }
       } else if (deltaX > 35) {
@@ -203,9 +353,7 @@ export default function App() {
           // Swiped left when sidebar is closed -> Next Tab
           const currentIdx = MAIN_TABS.indexOf(currentView);
           if (currentIdx !== -1 && currentIdx < MAIN_TABS.length - 1) {
-            setCurrentView(MAIN_TABS[currentIdx + 1]);
-            setMatchedPhotoIds(null);
-            setSearchQuery("");
+            navigateTo({ view: MAIN_TABS[currentIdx + 1] });
           }
         }
       }
@@ -220,22 +368,270 @@ export default function App() {
 
   // Selection & Lightbox Modals
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
-  const [activeLightboxPhoto, setActiveLightboxPhoto] = useState<Photo | null>(
-    null
-  );
   const [activeLightboxList, setActiveLightboxList] = useState<Photo[] | null>(
-    null
-  );
-  const [activeEditorPhoto, setActiveEditorPhoto] = useState<Photo | null>(
     null
   );
 
   // Dialog Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
 
-  // Save photos to local storage on change
+  // Child Component References for Back Navigation
+  const headerRef = useRef<HeaderRef>(null);
+  const mediaViewerRef = useRef<MediaViewerRef>(null);
+  const photoEditorRef = useRef<PhotoEditorRef>(null);
+  const videoEditorRef = useRef<VideoEditorRef>(null);
+  const hiddenVaultRef = useRef<HiddenVaultRef>(null);
+  const albumsViewRef = useRef<AlbumsViewRef>(null);
+  const peopleViewRef = useRef<PeopleViewRef>(null);
+  const memoriesViewRef = useRef<MemoriesViewRef>(null);
+  const placesMapViewRef = useRef<PlacesMapViewRef>(null);
+
+  const lastBackTimestampRef = useRef<number>(0);
+  const prevHasOverlayRef = useRef<boolean>(false);
+
+  // Centralized Back Navigation Logic
+  const handleGlobalBack = useCallback(
+    (options?: { isPopState?: boolean }) => {
+      const now = Date.now();
+      if (now - lastBackTimestampRef.current < 80) {
+        return true; // Ignore rapid duplicate triggers within 80ms
+      }
+      lastBackTimestampRef.current = now;
+
+      // 1. Editor Modals (Unsaved changes prompt / editor exit)
+      if (navState.activeEditorId) {
+        const editorPhoto = photos.find((p) => p.id === navState.activeEditorId);
+        if (editorPhoto?.isVideo) {
+          if (videoEditorRef.current?.handleBack()) return true;
+        } else {
+          if (photoEditorRef.current?.handleBack()) return true;
+        }
+      }
+
+      // 2. Lightbox / Media Viewer
+      if (navState.activePhotoId) {
+        if (mediaViewerRef.current?.handleBack()) return true;
+      }
+
+      // 3. App-level Modals
+      if (showUploadModal) {
+        setShowUploadModal(false);
+        return true;
+      }
+      if (showAddToAlbumModal) {
+        setShowAddToAlbumModal(false);
+        return true;
+      }
+      if (showBatchShareModal) {
+        setShowBatchShareModal(false);
+        return true;
+      }
+
+      // 4. Batch Selection Mode in Gallery
+      if (selectedPhotoIds.length > 0) {
+        setSelectedPhotoIds([]);
+        return true;
+      }
+
+      // 5. Header Modals / Search Expansion
+      if (headerRef.current?.hasOpenModal()) {
+        headerRef.current.closeOpenModal();
+        return true;
+      }
+
+      // 6. View-specific sub-modals / active sub-views
+      if (currentView === "hidden" && hiddenVaultRef.current) {
+        if (hiddenVaultRef.current.handleBack()) return true;
+      }
+      if (currentView === "albums" && albumsViewRef.current) {
+        if (albumsViewRef.current.handleBack()) return true;
+      }
+      if (currentView === "people" && peopleViewRef.current) {
+        if (peopleViewRef.current.handleBack()) return true;
+      }
+      if (currentView === "memories" && memoriesViewRef.current) {
+        if (memoriesViewRef.current.handleBack()) return true;
+      }
+      if (currentView === "places" && placesMapViewRef.current) {
+        if (placesMapViewRef.current.handleBack()) return true;
+      }
+
+      // 7. Sidebar Drawer
+      if (sidebarOpen) {
+        setSidebarOpen(false);
+        return true;
+      }
+
+      // 8. Search Filter Active
+      if (matchedPhotoIds !== null || searchQuery.trim().length > 0) {
+        setMatchedPhotoIds(null);
+        setSearchQuery("");
+        return true;
+      }
+
+      // Check if we are currently at the Root Home Screen ("photos" with no album/person/story/city filter)
+      const isCurrentlyAtRootHome =
+        currentView === "photos" &&
+        !navState.albumId &&
+        !navState.personId &&
+        !navState.storyId &&
+        !navState.city &&
+        !navState.isSettingsOpen;
+
+      if (isCurrentlyAtRootHome) {
+        // Clear stack and return false so mobile back button closes/exits the app naturally
+        navHistoryRef.current = [];
+        return false;
+      }
+
+      // 9. Navigation History Stack Pop (for other views like albums/memories)
+      if (navHistoryRef.current.length > 0) {
+        const previousState = navHistoryRef.current.pop();
+        if (previousState) {
+          setNavState(previousState);
+          if (!options?.isPopState) {
+            try {
+              window.history.back();
+            } catch {}
+          }
+          return true;
+        }
+      }
+
+      // 10. Fallback to Root "photos" View
+      if (
+        currentView !== "photos" ||
+        navState.albumId ||
+        navState.personId ||
+        navState.storyId ||
+        navState.city ||
+        navState.isSettingsOpen
+      ) {
+        setNavState({
+          view: "photos",
+          albumId: null,
+          personId: null,
+          storyId: null,
+          city: null,
+          activePhotoId: null,
+          activeEditorId: null,
+          isSettingsOpen: false,
+        });
+        navHistoryRef.current = [];
+        return true;
+      }
+
+      return false;
+    },
+    [
+      navState,
+      photos,
+      showUploadModal,
+      showAddToAlbumModal,
+      showBatchShareModal,
+      selectedPhotoIds.length,
+      currentView,
+      sidebarOpen,
+      matchedPhotoIds,
+      searchQuery,
+    ]
+  );
+
+  // Sync history stack for Android Back Gesture & PopState
   useEffect(() => {
-    localStorage.setItem("galleyar_photos_db", JSON.stringify(photos));
+    const hasOverlayState =
+      Boolean(navState.activeEditorId) ||
+      Boolean(navState.activePhotoId) ||
+      showUploadModal ||
+      showAddToAlbumModal ||
+      showBatchShareModal ||
+      selectedPhotoIds.length > 0 ||
+      sidebarOpen ||
+      currentView !== "photos" ||
+      isAlbumOpened;
+
+    if (hasOverlayState && !prevHasOverlayRef.current) {
+      try {
+        window.history.pushState({ galleyarDepth: Date.now() }, "");
+      } catch {}
+    }
+    prevHasOverlayRef.current = hasOverlayState;
+  }, [
+    Boolean(navState.activeEditorId),
+    Boolean(navState.activePhotoId),
+    showUploadModal,
+    showAddToAlbumModal,
+    showBatchShareModal,
+    selectedPhotoIds.length > 0,
+    sidebarOpen,
+    currentView,
+    isAlbumOpened,
+  ]);
+
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      e.preventDefault();
+      handleGlobalBack({ isPopState: true });
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleGlobalBack();
+      }
+    };
+
+    // Native Android Capacitor App backButton listener support
+    const setupCapacitorBackButton = async () => {
+      try {
+        const capacitor = (window as any).Capacitor;
+        if (capacitor && capacitor.Plugins && capacitor.Plugins.App) {
+          capacitor.Plugins.App.addListener("backButton", () => {
+            const handled = handleGlobalBack();
+            if (!handled && capacitor.Plugins.App.minimizeApp) {
+              capacitor.Plugins.App.minimizeApp();
+            }
+          });
+        }
+      } catch (err) {}
+    };
+
+    setupCapacitorBackButton();
+
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [handleGlobalBack]);
+
+  // Save photos to local storage on change safely with quota fallback
+  useEffect(() => {
+    try {
+      localStorage.setItem("galleyar_photos_db", JSON.stringify(photos));
+    } catch (err) {
+      console.warn("localStorage quota exceeded while saving photos:", err);
+      try {
+        const lightweight = photos.map((p) => {
+          let highRes = p.highResUrl;
+          let mainUrl = p.url;
+          if (highRes && highRes.startsWith("data:") && highRes.length > 50000) {
+            highRes = mainUrl && !mainUrl.startsWith("data:") ? mainUrl : "";
+          }
+          if (mainUrl && mainUrl.startsWith("data:") && mainUrl.length > 50000) {
+            mainUrl = "";
+          }
+          return {
+            ...p,
+            highResUrl: highRes,
+            url: mainUrl || p.url,
+          };
+        });
+        localStorage.setItem("galleyar_photos_db", JSON.stringify(lightweight));
+      } catch {
+        // Silently catch quota error so React state works seamlessly in memory
+      }
+    }
   }, [photos]);
 
   // Photo Filtering & Sorting based on view, search, and sort preferences
@@ -280,16 +676,50 @@ export default function App() {
     }
   });
 
+  const getPhotoTimestamp = (p: Photo): number => {
+    if (p.date) {
+      const parsed = Date.parse(p.date);
+      if (!isNaN(parsed)) return parsed;
+    }
+    if (p.year) {
+      return new Date(p.year, 0, 1).getTime();
+    }
+    return 0;
+  };
+
   const visiblePhotos = Array.from(uniquePhotoMap.values()).sort((a, b) => {
     let comparison = 0;
     if (sortBy === "date") {
-      const timeA = new Date(a.date).getTime() || 0;
-      const timeB = new Date(b.date).getTime() || 0;
+      const timeA = getPhotoTimestamp(a);
+      const timeB = getPhotoTimestamp(b);
       comparison = timeA - timeB;
+      // Secondary sort by title if timestamps match
+      if (comparison === 0) {
+        comparison = (a.title || "").localeCompare(b.title || "", undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }
     } else if (sortBy === "title") {
-      comparison = (a.title || "").localeCompare(b.title || "");
+      // Natural alphanumeric dictionary form sort
+      comparison = (a.title || "").localeCompare(b.title || "", undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      // Secondary sort by date
+      if (comparison === 0) {
+        const timeA = getPhotoTimestamp(a);
+        const timeB = getPhotoTimestamp(b);
+        comparison = timeA - timeB;
+      }
     } else if (sortBy === "category") {
       comparison = (a.category || "").localeCompare(b.category || "");
+      if (comparison === 0) {
+        comparison = (a.title || "").localeCompare(b.title || "", undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }
     } else if (sortBy === "fileSize") {
       const parseSize = (s?: string) => {
         if (!s) return 0;
@@ -303,6 +733,12 @@ export default function App() {
         return num;
       };
       comparison = parseSize(a.fileSize) - parseSize(b.fileSize);
+      if (comparison === 0) {
+        comparison = (a.title || "").localeCompare(b.title || "", undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }
     }
 
     return sortOrder === "asc" ? comparison : -comparison;
@@ -322,11 +758,6 @@ export default function App() {
     setPhotos((prev) =>
       prev.map((p) => (p.id === photoId ? { ...p, isFavorite: !p.isFavorite } : p))
     );
-    if (activeLightboxPhoto && activeLightboxPhoto.id === photoId) {
-      setActiveLightboxPhoto((prev) =>
-        prev ? { ...prev, isFavorite: !prev.isFavorite } : null
-      );
-    }
   };
 
   const handleDeletePhoto = (photoId: string) => {
@@ -386,19 +817,7 @@ export default function App() {
   const handleBatchShare = () => {
     const selectedPhotos = photos.filter((p) => selectedPhotoIds.includes(p.id));
     if (selectedPhotos.length === 0) return;
-    const urls = selectedPhotos.map((p) => p.highResUrl || p.url).join("\n");
-    if (typeof navigator !== "undefined" && navigator.share) {
-      navigator
-        .share({
-          title: `${selectedPhotos.length} Photos - GalleyAR`,
-          text: `Sharing ${selectedPhotos.length} photos from GalleyAR`,
-          url: selectedPhotos[0]?.highResUrl || selectedPhotos[0]?.url,
-        })
-        .catch(() => {});
-    } else {
-      navigator.clipboard.writeText(urls);
-      alert(`Copied links for ${selectedPhotos.length} photos to clipboard!`);
-    }
+    setShowBatchShareModal(true);
   };
 
   // Execute AI Search with Gemini API
@@ -409,7 +828,7 @@ export default function App() {
     }
 
     setIsAISearching(true);
-    setCurrentView("photos");
+    navigateTo({ view: "photos" });
 
     const matches = await searchPhotosWithAI(queryStr, photos);
     if (matches.length > 0) {
@@ -426,7 +845,7 @@ export default function App() {
   const handleSaveEditedPhoto = (updatedPhoto: Photo, isCopy?: boolean) => {
     if (isCopy) {
       setPhotos((prev) => [updatedPhoto, ...prev]);
-      setActiveLightboxPhoto(updatedPhoto);
+      setNavState((current) => ({ ...current, activePhotoId: updatedPhoto.id }));
       setBatchToastNotice(`Created new copy: "${updatedPhoto.title}"`);
       setTimeout(() => setBatchToastNotice(null), 3000);
     } else {
@@ -434,7 +853,7 @@ export default function App() {
         prev.map((p) => (p.id === updatedPhoto.id ? updatedPhoto : p))
       );
       if (activeLightboxPhoto?.id === updatedPhoto.id) {
-        setActiveLightboxPhoto(updatedPhoto);
+        setNavState((current) => ({ ...current, activePhotoId: updatedPhoto.id }));
       }
       setBatchToastNotice(`Saved changes to "${updatedPhoto.title}"`);
       setTimeout(() => setBatchToastNotice(null), 3000);
@@ -502,6 +921,20 @@ export default function App() {
     setAlbums((prev) => [...prev, newAlbum]);
   };
 
+  const handleCreateAlbumAndAdd = (name: string, description: string, photoIdsToAdd: string[]) => {
+    const newAlbum: Album = {
+      id: `album-${Date.now()}`,
+      name,
+      type: "custom",
+      icon: "Folder",
+      photoIds: photoIdsToAdd,
+      createdAt: new Date().toISOString(),
+      description,
+    };
+    setAlbums((prev) => [...prev, newAlbum]);
+    setSelectedPhotoIds([]);
+  };
+
   // Add Uploaded Photo
   const handleAddUploadedPhoto = (newPhoto: Photo) => {
     setPhotos((prev) => [newPhoto, ...prev]);
@@ -529,15 +962,13 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans antialiased selection:bg-indigo-500 selection:text-white">
-      <div className="flex-1 flex overflow-hidden">
+    <div className="h-full h-[100dvh] w-full w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col font-sans antialiased selection:bg-indigo-500 selection:text-white">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left Navigation Sidebar */}
         <Sidebar
           currentView={currentView}
           onSelectView={(view) => {
-            setCurrentView(view);
-            setMatchedPhotoIds(null);
-            setSearchQuery("");
+            navigateTo({ view });
             setSidebarOpen(false);
           }}
           favoritesCount={photos.filter((p) => p.isFavorite && !p.isTrash).length}
@@ -549,9 +980,12 @@ export default function App() {
         />
 
         {/* Main Content View Area */}
-        <main className="flex-1 flex flex-col min-w-0 bg-slate-950 overflow-y-auto">
+        <main className="flex-1 flex flex-col min-w-0 bg-slate-950 overflow-hidden h-full min-h-0">
           <Header
+            ref={headerRef}
             currentView={currentView}
+            isSettingsOpenProp={navState.isSettingsOpen}
+            onToggleSettings={(show) => navigateTo({ isSettingsOpen: show })}
             searchQuery={searchQuery}
             onSearchChange={(q) => {
               setSearchQuery(q);
@@ -576,86 +1010,16 @@ export default function App() {
             onBatchFavorite={handleBatchFavorite}
             onBatchDelete={handleBatchDelete}
             onBatchShare={handleBatchShare}
+            onOpenAddToAlbumModal={() => setShowAddToAlbumModal(true)}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
             onOpenUploadModal={() => setShowUploadModal(true)}
           />
-
-          {/* Floating Batch Selection Bar for Main Photos/Videos Gallery */}
-          {selectedPhotoIds.length > 0 && (currentView === "photos" || currentView === "videos") && (
-            <div className="sticky top-16 z-25 mx-3 sm:mx-6 my-2 bg-indigo-950/95 border border-indigo-500/50 p-2.5 rounded-2xl flex items-center justify-between gap-3 shadow-2xl backdrop-blur-xl animate-fade-in">
-              <div className="flex items-center gap-2.5">
-                {/* Box next to text: 1 tick when partially selected, 2 ticks when all selected */}
-                <button
-                  onClick={handleSelectAllTimeline}
-                  className={`p-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center ${
-                    isAllTimelineSelected
-                      ? "bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-500/30"
-                      : "bg-slate-900 text-indigo-400 hover:text-indigo-300 border-indigo-500/40 hover:bg-slate-800"
-                  }`}
-                  title={isAllTimelineSelected ? "Deselect All Items" : "Select All Items"}
-                >
-                  {isAllTimelineSelected ? (
-                    <CheckCheck className="w-4 h-4 text-white" />
-                  ) : (
-                    <Check className="w-4 h-4 text-indigo-400" />
-                  )}
-                </button>
-
-                <span className="text-xs font-bold text-indigo-200">
-                  {selectedPhotoIds.length} item{selectedPhotoIds.length > 1 ? "s" : ""} selected
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setShowAddToAlbumModal(true)}
-                  className="p-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 cursor-pointer shadow-md flex items-center gap-1.5 transition-all"
-                  title="Add selected items to an album"
-                >
-                  <Plus className="w-4 h-4 text-white" />
-                  <span className="text-xs font-semibold hidden sm:inline">Add to Album</span>
-                </button>
-
-                <button
-                  onClick={handleBatchShare}
-                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-400 border border-slate-700/60 cursor-pointer"
-                  title="Share Selected"
-                >
-                  <Share2 className="w-4 h-4 text-sky-400" />
-                </button>
-
-                <button
-                  onClick={handleBatchFavorite}
-                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-pink-400 border border-slate-700/60 cursor-pointer"
-                  title="Favorite Selected"
-                >
-                  <Heart className="w-4 h-4 fill-pink-400 text-pink-400" />
-                </button>
-
-                <button
-                  onClick={handleBatchDelete}
-                  className="p-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 cursor-pointer"
-                  title="Delete Selected"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-
-                <button
-                  onClick={() => setSelectedPhotoIds([])}
-                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-100 border border-slate-700/60 cursor-pointer"
-                  title="Clear Selection"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* View Router with horizontal swipe tab switching and liquid view transitions */}
           <div
             onTouchStart={handleTabTouchStart}
             onTouchEnd={handleTabTouchEnd}
-            className={`flex-1 ${currentView === "hidden" || isAlbumOpened ? "pb-0" : "pb-20 lg:pb-0"} overflow-hidden`}
+            className={`flex-1 ${sidebarOpen ? "overflow-hidden touch-none" : "overflow-y-auto"} min-h-0 ${currentView === "hidden" || isAlbumOpened ? "pb-0" : "pb-20 lg:pb-0"}`}
           >
             <AnimatePresence mode="wait">
               <motion.div
@@ -676,10 +1040,11 @@ export default function App() {
                     selectedPhotoIds={selectedPhotoIds}
                     onToggleSelectPhoto={handleToggleSelectPhoto}
                     onOpenPhoto={(photo) => {
-                      setActiveLightboxList(null);
-                      setActiveLightboxPhoto(photo);
+                      navigateTo({ activePhotoId: photo.id }, visiblePhotos);
                     }}
                     onToggleFavorite={handleToggleFavorite}
+                    sortBy={sortBy}
+                    sortOrder={sortOrder}
                   />
                 )}
 
@@ -693,17 +1058,22 @@ export default function App() {
                     selectedPhotoIds={selectedPhotoIds}
                     onToggleSelectPhoto={handleToggleSelectPhoto}
                     onOpenPhoto={(photo) => {
-                      setActiveLightboxList(visiblePhotos.filter((p) => p.isVideo));
-                      setActiveLightboxPhoto(photo);
+                      const videoList = visiblePhotos.filter((p) => p.isVideo);
+                      navigateTo({ activePhotoId: photo.id }, videoList);
                     }}
                     onToggleFavorite={handleToggleFavorite}
+                    sortBy={sortBy}
+                    sortOrder={sortOrder}
                   />
                 )}
 
                 {currentView === "albums" && (
                   <AlbumsView
+                    ref={albumsViewRef}
                     albums={albums}
                     photos={photos.filter((p) => !p.isTrash && !p.isHidden)}
+                    selectedAlbumIdProp={navState.albumId}
+                    onSelectAlbum={(albumId) => navigateTo({ view: "albums", albumId })}
                     onCreateAlbum={handleCreateAlbum}
                     onEditAlbum={handleEditAlbum}
                     onAddPhotosToAlbum={handleAddPhotosToAlbum}
@@ -713,51 +1083,68 @@ export default function App() {
                     onDeletePhoto={handleDeletePhoto}
                     onOpenedAlbumChange={(isOpened) => setIsAlbumOpened(isOpened)}
                     onOpenPhoto={(photo, scopedList) => {
-                      setActiveLightboxList(scopedList || null);
-                      setActiveLightboxPhoto(photo);
+                      navigateTo({ activePhotoId: photo.id }, scopedList || null);
                     }}
                   />
                 )}
 
                 {currentView === "memories" && (
                   <MemoriesView
+                    ref={memoriesViewRef}
                     stories={stories}
                     photos={photos.filter((p) => !p.isTrash && !p.isHidden)}
+                    selectedStoryIdProp={navState.storyId}
+                    onSelectStory={(storyId) => navigateTo({ view: "memories", storyId })}
                     onAddStory={(story) => setStories((prev) => [story, ...prev])}
-                    onOpenPhoto={(photo) => setActiveLightboxPhoto(photo)}
+                    onOpenPhoto={(photo, scopedList) => {
+                      navigateTo({ activePhotoId: photo.id }, scopedList || null);
+                    }}
                   />
                 )}
 
                 {currentView === "people" && (
                   <PeopleView
+                    ref={peopleViewRef}
                     people={people}
                     photos={photos.filter((p) => !p.isTrash && !p.isHidden)}
-                    onOpenPhoto={(photo) => setActiveLightboxPhoto(photo)}
+                    selectedPersonIdProp={navState.personId}
+                    onSelectPerson={(personId) => navigateTo({ view: "people", personId })}
+                    onOpenPhoto={(photo, scopedList) => {
+                      navigateTo({ activePhotoId: photo.id }, scopedList || null);
+                    }}
                     onUpdatePersonName={handleUpdatePersonName}
                   />
                 )}
 
                 {currentView === "places" && (
                   <PlacesMapView
+                    ref={placesMapViewRef}
                     photos={photos.filter((p) => !p.isTrash && !p.isHidden)}
-                    onOpenPhoto={(photo) => setActiveLightboxPhoto(photo)}
+                    selectedCityProp={navState.city}
+                    onSelectCity={(city) => navigateTo({ view: "places", city })}
+                    onOpenPhoto={(photo, scopedList) => {
+                      navigateTo({ activePhotoId: photo.id }, scopedList || null);
+                    }}
                   />
                 )}
 
                 {currentView === "hidden" && (
                   <HiddenVaultModal
+                    ref={hiddenVaultRef}
                     hiddenPhotos={photos.filter((p) => p.isHidden && !p.isTrash)}
                     allGalleryPhotos={photos}
                     onOpenPhoto={(photo, scopedList) => {
-                      setActiveLightboxList(scopedList || null);
-                      setActiveLightboxPhoto(photo);
+                      navigateTo({ activePhotoId: photo.id }, scopedList || null);
                     }}
                     onUnhidePhoto={handleUnhidePhoto}
                     onHidePhotos={handleHidePhotos}
                     onDeletePhoto={handleDeletePhoto}
                     onPermanentDelete={handlePermanentDelete}
                     onToggleFavorite={handleToggleFavorite}
-                    onBack={() => setCurrentView("photos")}
+                    onBack={() => {
+                      navigateTo({ view: "photos" });
+                      setSidebarOpen(true);
+                    }}
                   />
                 )}
 
@@ -779,96 +1166,45 @@ export default function App() {
           <BottomNav
             currentView={currentView}
             onSelectView={(view) => {
-              setCurrentView(view);
-              setMatchedPhotoIds(null);
-              setSearchQuery("");
+              navigateTo({ view });
             }}
           />
         )}
       </div>
 
-      {/* Add Photos to Album Modal from Gallery Selection */}
-      {showAddToAlbumModal && (
-        <div className="fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-5 space-y-4 shadow-2xl animate-fade-in overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div>
-                <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                  <Plus className="w-5 h-5 text-indigo-400" />
-                  <span>Add Photos to Album</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Targeting {selectedPhotoIds.length} selected item{selectedPhotoIds.length > 1 ? "s" : ""}
-                </p>
-              </div>
-              <button
-                onClick={() => setShowAddToAlbumModal(false)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* Add Photos to Album & Private Vault Modal */}
+      <AddToAlbumVaultModal
+        isOpen={showAddToAlbumModal}
+        selectedPhotoIds={selectedPhotoIds}
+        photos={photos}
+        albums={albums}
+        onClose={() => setShowAddToAlbumModal(false)}
+        onAddToAlbum={(albumId, photoIds) => {
+          handleAddPhotosToAlbum(albumId, photoIds);
+          setSelectedPhotoIds([]);
+        }}
+        onCreateAlbum={(name, description) => {
+          handleCreateAlbumAndAdd(name, description, selectedPhotoIds);
+        }}
+        onHidePhotos={(photoIds) => {
+          handleHidePhotos(photoIds);
+        }}
+        onShowToast={(msg) => {
+          setBatchToastNotice(msg);
+          setTimeout(() => setBatchToastNotice(null), 3500);
+        }}
+      />
 
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              <p className="text-xs font-semibold text-slate-300">Select Target Album:</p>
-              {albums.map((album) => {
-                const albumPhotoCount = album.photoIds?.length || 0;
-                return (
-                  <button
-                    key={album.id}
-                    onClick={() => {
-                      handleAddPhotosToAlbum(album.id, selectedPhotoIds);
-                      setBatchToastNotice(`Added ${selectedPhotoIds.length} item(s) to "${album.name}"`);
-                      setSelectedPhotoIds([]);
-                      setShowAddToAlbumModal(false);
-                      setTimeout(() => setBatchToastNotice(null), 3200);
-                    }}
-                    className="w-full p-3 rounded-2xl bg-slate-950/80 border border-slate-800/80 hover:border-indigo-500/60 hover:bg-slate-850 flex items-center justify-between transition-all text-left cursor-pointer"
-                  >
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
-                        <Folder className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <h4 className="text-xs font-bold text-slate-100 truncate">{album.name}</h4>
-                        <p className="text-[10px] text-slate-400 truncate">
-                          {albumPhotoCount} item{albumPhotoCount === 1 ? "" : "s"}
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-3 py-1.5 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white text-[11px] font-bold border border-indigo-500/30 shrink-0 transition-all">
-                      Add Here
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="border-t border-slate-800 pt-3">
-              <button
-                onClick={() => {
-                  setShowAddToAlbumModal(false);
-                  const name = prompt("Enter new album name:");
-                  if (name && name.trim()) {
-                    handleCreateAlbum(name.trim(), "");
-                    setTimeout(() => {
-                      // Add to the newest created album
-                      const newestAlbum = albums[albums.length - 1];
-                      if (newestAlbum) {
-                        handleAddPhotosToAlbum(newestAlbum.id, selectedPhotoIds);
-                      }
-                    }, 100);
-                  }
-                }}
-                className="w-full py-2.5 px-4 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 text-indigo-300 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
-              >
-                <Plus className="w-4 h-4 text-indigo-400" />
-                <span>+ Create New Album & Add</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Multi-Item Share Modal */}
+      <BatchShareModal
+        isOpen={showBatchShareModal}
+        selectedPhotos={photos.filter((p) => selectedPhotoIds.includes(p.id))}
+        onClose={() => setShowBatchShareModal(false)}
+        onShowToast={(msg) => {
+          setBatchToastNotice(msg);
+          setTimeout(() => setBatchToastNotice(null), 3500);
+        }}
+      />
 
       {/* Floating Toast Notice */}
       {batchToastNotice && (
@@ -881,38 +1217,35 @@ export default function App() {
       {/* Lightbox Photo Viewer Overlay */}
       {activeLightboxPhoto && (
         <PhotoLightbox
-          photo={photos.find((p) => p.id === activeLightboxPhoto.id) || activeLightboxPhoto}
+          ref={mediaViewerRef}
+          photo={activeLightboxPhoto}
           photosList={activeLightboxList || visiblePhotos}
-          onClose={() => {
-            setActiveLightboxPhoto(null);
-            setActiveLightboxList(null);
-          }}
-          onSelectPhoto={(p) => setActiveLightboxPhoto(p)}
+          onClose={() => navigateTo({ activePhotoId: null })}
+          onSelectPhoto={handleSelectPhotoInViewer}
           onToggleFavorite={handleToggleFavorite}
           onDeletePhoto={handleDeletePhoto}
           onPermanentDelete={handlePermanentDelete}
           onUnhidePhoto={handleUnhidePhoto}
-          onOpenEditor={(p) => {
-            setActiveEditorPhoto(p);
-            setActiveLightboxPhoto(null);
-          }}
+          onOpenEditor={(p) => navigateTo({ activeEditorId: p.id })}
         />
       )}
 
       {/* Photo & Video Editor Overlays */}
       {activeEditorPhoto && activeEditorPhoto.isVideo && (
         <VideoEditorModal
+          ref={videoEditorRef}
           photo={activeEditorPhoto}
           onSave={handleSaveEditedPhoto}
-          onClose={() => setActiveEditorPhoto(null)}
+          onClose={() => navigateTo({ activeEditorId: null })}
         />
       )}
 
       {activeEditorPhoto && !activeEditorPhoto.isVideo && (
         <PhotoEditorModal
+          ref={photoEditorRef}
           photo={activeEditorPhoto}
           onSave={handleSaveEditedPhoto}
-          onClose={() => setActiveEditorPhoto(null)}
+          onClose={() => navigateTo({ activeEditorId: null })}
         />
       )}
 

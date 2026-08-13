@@ -1,23 +1,54 @@
-import React, { useState } from "react";
-import { Users, User, Heart, ChevronRight, Edit3, X, Sparkles } from "lucide-react";
+import React, { useState, forwardRef, useImperativeHandle } from "react";
+import { Users, User, Heart, ChevronRight, Edit3, X, Sparkles, ArrowLeft } from "lucide-react";
 import { PersonCluster, Photo } from "../types";
 
 interface PeopleViewProps {
   people: PersonCluster[];
   photos: Photo[];
-  onOpenPhoto: (photo: Photo) => void;
+  onOpenPhoto: (photo: Photo, photosList?: Photo[]) => void;
   onUpdatePersonName: (personId: string, newName: string) => void;
+  selectedPersonIdProp?: string | null;
+  onSelectPerson?: (personId: string | null) => void;
 }
 
-export const PeopleView: React.FC<PeopleViewProps> = ({
+export interface PeopleViewRef {
+  handleBack: () => boolean;
+}
+
+export const PeopleView = forwardRef<PeopleViewRef, PeopleViewProps>(({
   people = [],
   photos = [],
   onOpenPhoto,
   onUpdatePersonName,
-}) => {
-  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
+  selectedPersonIdProp,
+  onSelectPerson,
+}, ref) => {
+  const [internalSelectedPersonId, setInternalSelectedPersonId] = useState<string | null>(null);
+  const selectedPersonId = selectedPersonIdProp !== undefined ? selectedPersonIdProp : internalSelectedPersonId;
+
+  const handleSetSelectedPersonId = (id: string | null) => {
+    setInternalSelectedPersonId(id);
+    if (onSelectPerson) {
+      onSelectPerson(id);
+    }
+  };
+
   const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
   const [editNameInput, setEditNameInput] = useState("");
+
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (editingPersonId) {
+        setEditingPersonId(null);
+        return true;
+      }
+      if (selectedPersonId) {
+        handleSetSelectedPersonId(null);
+        return true;
+      }
+      return false;
+    },
+  }));
 
   const selectedPerson = people.find((p) => p.id === selectedPersonId);
 
@@ -43,7 +74,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
           <div className="bg-slate-900/90 border border-slate-800 p-6 rounded-3xl flex items-center justify-between">
             <div className="flex items-center gap-4">
               <button
-                onClick={() => setSelectedPersonId(null)}
+                onClick={() => handleSetSelectedPersonId(null)}
                 className="p-2.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
               >
                 ← Back
@@ -78,7 +109,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
             {personPhotos.map((photo) => (
               <div
                 key={photo.id}
-                onClick={() => onOpenPhoto(photo)}
+                onClick={() => onOpenPhoto(photo, personPhotos)}
                 className="group relative aspect-square rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 hover:border-indigo-500 transition-all cursor-pointer"
               >
                 <img
@@ -126,7 +157,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
                 <div
                   key={person.id}
                   onClick={() => {
-                    if (!isEditing) setSelectedPersonId(person.id);
+                    if (!isEditing) handleSetSelectedPersonId(person.id);
                   }}
                   className="group rounded-3xl bg-slate-900/80 border border-slate-800/80 hover:border-indigo-500/60 p-5 flex flex-col items-center text-center space-y-3 transition-all duration-300 cursor-pointer shadow-md hover:shadow-xl hover:-translate-y-1"
                 >
@@ -192,4 +223,4 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
       )}
     </div>
   );
-};
+});

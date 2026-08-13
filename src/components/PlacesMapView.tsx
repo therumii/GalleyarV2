@@ -1,17 +1,43 @@
-import React, { useState } from "react";
+import React, { useState, forwardRef, useImperativeHandle } from "react";
 import { MapPin, Globe, Compass, Navigation, Camera, ChevronRight } from "lucide-react";
 import { Photo } from "../types";
 
 interface PlacesMapViewProps {
   photos: Photo[];
-  onOpenPhoto: (photo: Photo) => void;
+  onOpenPhoto: (photo: Photo, photosList?: Photo[]) => void;
+  selectedCityProp?: string | null;
+  onSelectCity?: (city: string | null) => void;
 }
 
-export const PlacesMapView: React.FC<PlacesMapViewProps> = ({
+export interface PlacesMapViewRef {
+  handleBack: () => boolean;
+}
+
+export const PlacesMapView = forwardRef<PlacesMapViewRef, PlacesMapViewProps>(({
   photos = [],
   onOpenPhoto,
-}) => {
-  const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  selectedCityProp,
+  onSelectCity,
+}, ref) => {
+  const [internalCity, setInternalCity] = useState<string | null>(null);
+  const selectedCity = selectedCityProp !== undefined ? selectedCityProp : internalCity;
+
+  const handleSetSelectedCity = (city: string | null) => {
+    setInternalCity(city);
+    if (onSelectCity) {
+      onSelectCity(city);
+    }
+  };
+
+  useImperativeHandle(ref, () => ({
+    handleBack: () => {
+      if (selectedCity) {
+        handleSetSelectedCity(null);
+        return true;
+      }
+      return false;
+    },
+  }));
 
   // Group photos by City/Country
   const locationGroupsMap: {
@@ -66,7 +92,7 @@ export const PlacesMapView: React.FC<PlacesMapViewProps> = ({
 
         {selectedCity && (
           <button
-            onClick={() => setSelectedCity(null)}
+            onClick={() => handleSetSelectedCity(null)}
             className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-medium cursor-pointer"
           >
             Show All Destinations
@@ -83,7 +109,7 @@ export const PlacesMapView: React.FC<PlacesMapViewProps> = ({
           return (
             <div
               key={item.city}
-              onClick={() => setSelectedCity(isSelected ? null : item.city)}
+              onClick={() => handleSetSelectedCity(isSelected ? null : item.city)}
               className={`flex-shrink-0 w-52 p-3 rounded-2xl bg-slate-900 border transition-all duration-300 cursor-pointer flex items-center gap-3 ${
                 isSelected
                   ? "border-emerald-500 bg-emerald-950/20 shadow-lg ring-1 ring-emerald-500"
@@ -133,7 +159,7 @@ export const PlacesMapView: React.FC<PlacesMapViewProps> = ({
               key={idx}
               onClick={(e) => {
                 e.stopPropagation();
-                setSelectedCity(item.city);
+                handleSetSelectedCity(item.city);
               }}
               className="pointer-events-auto justify-self-center self-center flex flex-col items-center group cursor-pointer"
             >
@@ -175,7 +201,7 @@ export const PlacesMapView: React.FC<PlacesMapViewProps> = ({
           {activePhotos.map((photo) => (
             <div
               key={photo.id}
-              onClick={() => onOpenPhoto(photo)}
+              onClick={() => onOpenPhoto(photo, activePhotos)}
               className="group relative aspect-square rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 hover:border-emerald-500 transition-all cursor-pointer"
             >
               <img
@@ -198,4 +224,4 @@ export const PlacesMapView: React.FC<PlacesMapViewProps> = ({
       </div>
     </div>
   );
-};
+});
