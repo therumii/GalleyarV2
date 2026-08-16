@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Check, CheckCheck, Folder, Heart, Plus, Share2, Trash2, X } from "lucide-react";
+import { Check, CheckCheck, Folder, Heart, Plus, Share2, Trash2, X, Smartphone, Camera, Film, FolderPlus, Upload, ShieldCheck, Sparkles, RefreshCw } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { Header, HeaderRef } from "./components/Header";
 import { BottomNav } from "./components/BottomNav";
@@ -18,6 +18,11 @@ import { MediaViewerRef } from "./components/MediaViewer";
 import { TrashView } from "./components/TrashView";
 import { AddToAlbumVaultModal } from "./components/AddToAlbumVaultModal";
 import { BatchShareModal } from "./components/BatchShareModal";
+import { DeviceMediaSyncModal } from "./components/DeviceMediaSyncModal";
+import { AndroidPermissionView } from "./components/AndroidPermissionView";
+import { EmptyGalleryState } from "./components/EmptyGalleryState";
+import { SplashScreen } from "./components/SplashScreen";
+import { androidMediaService, AndroidPermissionState } from "./services/androidMediaService";
 
 import {
   Photo,
@@ -31,28 +36,124 @@ import {
   SortByOption,
   SortOrderOption,
 } from "./types";
-import {
-  INITIAL_PHOTOS,
-  INITIAL_ALBUMS,
-  INITIAL_PEOPLE,
-  INITIAL_STORIES,
-} from "./data/initialPhotos";
 import { searchPhotosWithAI } from "./services/api";
 
 export default function App() {
-  // Main Photos State with local persistence fallback
-  const [photos, setPhotos] = useState<Photo[]>(() => {
+  // Main Real Device Photos State
+  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [customAlbums, setCustomAlbums] = useState<Album[]>(() => {
     try {
-      const saved = localStorage.getItem("galleyar_photos_db") || localStorage.getItem("lumina_photos_db");
-      return saved ? JSON.parse(saved) : INITIAL_PHOTOS;
+      const saved = localStorage.getItem("galleyar_custom_albums");
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_PHOTOS;
+      return [];
     }
   });
+  const [customStories, setCustomStories] = useState<MemoryStory[]>([]);
 
-  const [albums, setAlbums] = useState<Album[]>(INITIAL_ALBUMS);
-  const [people, setPeople] = useState<PersonCluster[]>(INITIAL_PEOPLE);
-  const [stories, setStories] = useState<MemoryStory[]>(INITIAL_STORIES);
+  const [permissionState, setPermissionState] = useState<AndroidPermissionState>(() =>
+    androidMediaService.getPermissionState()
+  );
+
+  const [isAppReady, setIsAppReady] = useState<boolean>(false);
+
+  // Hidden native file input refs for direct camera capture and device file selection
+  const deviceFileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraPhotoInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraVideoInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Load real device media from MediaStore / IndexedDB on startup
+  useEffect(() => {
+    const loadStoredMedia = async () => {
+      try {
+        const dbPhotos = await androidMediaService.queryDeviceMedia();
+        if (dbPhotos && dbPhotos.length > 0) {
+          setPhotos(dbPhotos);
+          setPermissionState("granted");
+        } else {
+          const perm = androidMediaService.getPermissionState();
+          setPermissionState(perm);
+        }
+      } catch (err) {
+        console.warn("Could not load photos from device storage:", err);
+      } finally {
+        setIsAppReady(true);
+      }
+    };
+    loadStoredMedia();
+
+    // Subscribe to media changes (additions, deletions, edits)
+    const unsubscribe = androidMediaService.subscribeMediaChanges(async () => {
+      const updated = await androidMediaService.queryDeviceMedia();
+      setPhotos(updated);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Compute dynamic system & bucket albums based on real device media
+  const albums = useMemo<Album[]>(() => {
+    const dynamic = androidMediaService.generateDynamicAlbums(photos);
+    // Merge custom user created albums
+    const existingIds = new Set(dynamic.map((a) => a.id));
+    const nonDuplicates = customAlbums.filter((a) => !existingIds.has(a.id));
+    return [...dynamic, ...nonDuplicates];
+  }, [photos, customAlbums]);
+
+  // Compute people clusters dynamically from real photos
+  const people = useMemo<PersonCluster[]>(() => {
+    const active = photos.filter((p) => !p.isTrash && !p.isHidden);
+    const personMap = new Map<string, { id: string; name: string; photoIds: string[]; coverPhotoUrl: string }>();
+    
+    active.forEach((p) => {
+      if (p.people && p.people.length > 0) {
+        p.people.forEach((person) => {
+          if (!personMap.has(person.id)) {
+            personMap.set(person.id, {
+              id: person.id,
+              name: person.name,
+              photoIds: [],
+              coverPhotoUrl: p.url,
+            });
+          }
+          personMap.get(person.id)!.photoIds.push(p.id);
+        });
+      }
+    });
+
+    return Array.from(personMap.values());
+  }, [photos]);
+
+  // Compute memory stories dynamically from real photos
+  const stories = useMemo<MemoryStory[]>(() => {
+    const active = photos.filter((p) => !p.isTrash && !p.isHidden);
+    if (active.length === 0) return customStories;
+
+    const map = new Map<string, Photo[]>();
+    active.forEach((p) => {
+      const key = p.month || (p.year ? `Year ${p.year}` : "Recent Highlights");
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
+    });
+
+    const list: MemoryStory[] = [];
+    for (const [key, pList] of map.entries()) {
+      if (pList.length >= 1) {
+        list.push({
+          id: `story-${key.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()}`,
+          title: `${key} Highlights`,
+          subtitle: `${pList.length} photo${pList.length > 1 ? "s" : ""} & video${pList.length > 1 ? "s" : ""}`,
+          narrative: `Moments and highlights from your device media in ${key}.`,
+          soundtrack: "Acoustic Sunset Melody",
+          dateRange: key,
+          coverPhotoUrl: pList[0].url,
+          photoIds: pList.map((p) => p.id),
+          palette: pList[0].dominantColors || ["#4f46e5", "#7c3aed", "#0f172a"],
+        });
+      }
+    }
+    return [...customStories, ...list];
+  }, [photos, customStories]);
 
   // Navigation & View State
   const [navState, setNavState] = useState<NavState>({
@@ -283,6 +384,8 @@ export default function App() {
     "videos",
     "albums",
     "memories",
+    "people",
+    "places",
   ];
   const [tabDragStart, setTabDragStart] = useState<{ x: number; y: number } | null>(
     null
@@ -301,13 +404,12 @@ export default function App() {
   }, [navState.activeEditorId, photos]);
 
   const handleTabTouchStart = (e: React.TouchEvent) => {
-    // Disable section switching gesture if an album is opened or modals are active
+    // Disable section switching gesture if lightbox or editor modals are active
     if (
       e.touches.length === 1 &&
       !activeLightboxPhoto &&
       !activeEditorPhoto &&
-      !showUploadModal &&
-      !isAlbumOpened
+      !showUploadModal
     ) {
       setTabDragStart({ x: e.touches[0].clientX, y: e.touches[0].clientY });
     }
@@ -318,8 +420,7 @@ export default function App() {
       !tabDragStart ||
       activeLightboxPhoto ||
       activeEditorPhoto ||
-      showUploadModal ||
-      isAlbumOpened
+      showUploadModal
     ) {
       setTabDragStart(null);
       return;
@@ -329,13 +430,24 @@ export default function App() {
     const deltaX = tabDragStart.x - endX;
     const deltaY = tabDragStart.y - endY;
 
-    if (Math.abs(deltaX) > Math.abs(deltaY) * 1.2 && Math.abs(deltaX) > 35) {
-      if (deltaX < -35) {
+    if (Math.abs(deltaX) > Math.abs(deltaY) * 1.25 && Math.abs(deltaX) > 40) {
+      if (deltaX < -40) {
         // Swiped Right (Finger moved Left-to-Right)
         if (sidebarOpen) {
           // Already open
+        } else if (isAlbumOpened && currentView === "albums") {
+          // Inside an opened album: swipe right returns to albums overview
+          albumsViewRef.current?.handleBack();
+        } else if (currentView === "people" && peopleViewRef.current?.handleBack()) {
+          // Handled closing person detail
+        } else if (currentView === "places" && placesMapViewRef.current?.handleBack()) {
+          // Handled closing city detail
+        } else if (currentView === "hidden") {
+          navigateTo({ view: "photos" });
+        } else if (currentView === "trash") {
+          navigateTo({ view: "photos" });
         } else if (currentView === "photos") {
-          // Swipe right in photos section opens sidebar
+          // Swipe right on photos home opens sidebar
           setSidebarOpen(true);
         } else {
           // In other sections, swiping right navigates to previous tab
@@ -344,12 +456,12 @@ export default function App() {
             navigateTo({ view: MAIN_TABS[currentIdx - 1] });
           }
         }
-      } else if (deltaX > 35) {
+      } else if (deltaX > 40) {
         // Swiped Left (Finger moved Right-to-Left)
         if (sidebarOpen) {
           // Swipe left closes sidebar
           setSidebarOpen(false);
-        } else {
+        } else if (!isAlbumOpened) {
           // Swiped left when sidebar is closed -> Next Tab
           const currentIdx = MAIN_TABS.indexOf(currentView);
           if (currentIdx !== -1 && currentIdx < MAIN_TABS.length - 1) {
@@ -374,6 +486,7 @@ export default function App() {
 
   // Dialog Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showDeviceSyncModal, setShowDeviceSyncModal] = useState(false);
 
   // Child Component References for Back Navigation
   const headerRef = useRef<HeaderRef>(null);
@@ -414,6 +527,10 @@ export default function App() {
       }
 
       // 3. App-level Modals
+      if (showDeviceSyncModal) {
+        setShowDeviceSyncModal(false);
+        return true;
+      }
       if (showUploadModal) {
         setShowUploadModal(false);
         return true;
@@ -527,6 +644,7 @@ export default function App() {
       navState,
       photos,
       showUploadModal,
+      showDeviceSyncModal,
       showAddToAlbumModal,
       showBatchShareModal,
       selectedPhotoIds.length,
@@ -543,6 +661,7 @@ export default function App() {
       Boolean(navState.activeEditorId) ||
       Boolean(navState.activePhotoId) ||
       showUploadModal ||
+      showDeviceSyncModal ||
       showAddToAlbumModal ||
       showBatchShareModal ||
       selectedPhotoIds.length > 0 ||
@@ -560,6 +679,7 @@ export default function App() {
     Boolean(navState.activeEditorId),
     Boolean(navState.activePhotoId),
     showUploadModal,
+    showDeviceSyncModal,
     showAddToAlbumModal,
     showBatchShareModal,
     selectedPhotoIds.length > 0,
@@ -860,10 +980,24 @@ export default function App() {
     }
   };
 
+  const saveCustomAlbums = (updated: Album[]) => {
+    setCustomAlbums(updated);
+    try {
+      localStorage.setItem("galleyar_custom_albums", JSON.stringify(updated));
+    } catch {}
+  };
+
   // Edit Album Info
   const handleEditAlbum = (albumId: string, name: string, description: string) => {
-    setAlbums((prev) =>
-      prev.map((a) => (a.id === albumId ? { ...a, name, description } : a))
+    saveCustomAlbums(
+      customAlbums.map((a) => (a.id === albumId ? { ...a, name, description } : a))
+    );
+  };
+
+  // Change Album Cover Photo
+  const handleChangeAlbumCover = (albumId: string, coverUrl: string) => {
+    saveCustomAlbums(
+      customAlbums.map((a) => (a.id === albumId ? { ...a, coverUrl } : a))
     );
   };
 
@@ -874,8 +1008,8 @@ export default function App() {
         prev.map((p) => (photoIdsToAdd.includes(p.id) ? { ...p, isFavorite: true } : p))
       );
     }
-    setAlbums((prev) =>
-      prev.map((a) => {
+    saveCustomAlbums(
+      customAlbums.map((a) => {
         if (a.id === albumId) {
           const updatedIds = Array.from(new Set([...a.photoIds, ...photoIdsToAdd]));
           return { ...a, photoIds: updatedIds };
@@ -892,8 +1026,8 @@ export default function App() {
         prev.map((p) => (p.id === photoIdToRemove ? { ...p, isFavorite: false } : p))
       );
     }
-    setAlbums((prev) =>
-      prev.map((a) => {
+    saveCustomAlbums(
+      customAlbums.map((a) => {
         if (a.id === albumId) {
           return { ...a, photoIds: a.photoIds.filter((id) => id !== photoIdToRemove) };
         }
@@ -904,7 +1038,7 @@ export default function App() {
 
   // Delete Custom Album
   const handleDeleteAlbum = (albumId: string) => {
-    setAlbums((prev) => prev.filter((a) => a.id !== albumId));
+    saveCustomAlbums(customAlbums.filter((a) => a.id !== albumId));
   };
 
   // Create Custom Album
@@ -918,7 +1052,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
       description,
     };
-    setAlbums((prev) => [...prev, newAlbum]);
+    saveCustomAlbums([...customAlbums, newAlbum]);
   };
 
   const handleCreateAlbumAndAdd = (name: string, description: string, photoIdsToAdd: string[]) => {
@@ -931,21 +1065,71 @@ export default function App() {
       createdAt: new Date().toISOString(),
       description,
     };
-    setAlbums((prev) => [...prev, newAlbum]);
+    saveCustomAlbums([...customAlbums, newAlbum]);
     setSelectedPhotoIds([]);
   };
 
   // Add Uploaded Photo
   const handleAddUploadedPhoto = (newPhoto: Photo) => {
-    setPhotos((prev) => [newPhoto, ...prev]);
+    setPhotos((prev) => {
+      const updated = [newPhoto, ...prev];
+      return updated;
+    });
+    setBatchToastNotice(`Added "${newPhoto.title}" to gallery`);
+    setTimeout(() => setBatchToastNotice(null), 3000);
+  };
+
+  // Import Device Photos / Videos from Phone Storage / APK
+  const handleImportDevicePhotos = (newPhotos: Photo[]) => {
+    setPhotos((prev) => {
+      const existingIds = new Set(prev.map((p) => p.id));
+      const uniqueNew = newPhotos.filter((p) => !existingIds.has(p.id));
+      return [...uniqueNew, ...prev];
+    });
+    setPermissionState("granted");
+    setBatchToastNotice(`Loaded ${newPhotos.length} media items from phone storage`);
+    setTimeout(() => setBatchToastNotice(null), 3500);
+  };
+
+  // Direct Device Media File Selector Change
+  const handleDeviceFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const files = Array.from(e.target.files);
+      const { photos: newItems, count } = await androidMediaService.importDeviceFiles(files);
+      if (count > 0) {
+        setPhotos((prev) => {
+          const existingIds = new Set(prev.map((p) => p.id));
+          const fresh = newItems.filter((p) => !existingIds.has(p.id));
+          return [...fresh, ...prev];
+        });
+        setPermissionState("granted");
+        setBatchToastNotice(`Imported ${count} photos & videos from device`);
+        setTimeout(() => setBatchToastNotice(null), 3000);
+      }
+    }
+    e.target.value = "";
+  };
+
+  const handlePermissionGranted = async () => {
+    setPermissionState("granted");
+    const media = await androidMediaService.queryDeviceMedia();
+    if (media.length > 0) {
+      setPhotos(media);
+    }
   };
 
   // Update Person Cluster Name
   const handleUpdatePersonName = (personId: string, newName: string) => {
-    setPeople((prev) =>
-      prev.map((person) =>
-        person.id === personId ? { ...person, name: newName } : person
-      )
+    setPhotos((prev) =>
+      prev.map((p) => {
+        if (p.people && p.people.some((per) => per.id === personId)) {
+          return {
+            ...p,
+            people: p.people.map((per) => (per.id === personId ? { ...per, name: newName } : per)),
+          };
+        }
+        return p;
+      })
     );
   };
 
@@ -975,6 +1159,7 @@ export default function App() {
           trashCount={photos.filter((p) => p.isTrash).length}
           hiddenCount={photos.filter((p) => p.isHidden).length}
           onOpenUpload={() => setShowUploadModal(true)}
+          onOpenDeviceSync={() => setShowDeviceSyncModal(true)}
           isOpen={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
@@ -1013,13 +1198,14 @@ export default function App() {
             onOpenAddToAlbumModal={() => setShowAddToAlbumModal(true)}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
             onOpenUploadModal={() => setShowUploadModal(true)}
+            onOpenDeviceSyncModal={() => setShowDeviceSyncModal(true)}
           />
 
           {/* View Router with horizontal swipe tab switching and liquid view transitions */}
           <div
             onTouchStart={handleTabTouchStart}
             onTouchEnd={handleTabTouchEnd}
-            className={`flex-1 ${sidebarOpen ? "overflow-hidden touch-none" : "overflow-y-auto"} min-h-0 ${currentView === "hidden" || isAlbumOpened ? "pb-0" : "pb-20 lg:pb-0"}`}
+            className={`flex-1 ${sidebarOpen ? "overflow-hidden touch-none" : "overflow-y-auto"} min-h-0`}
           >
             <AnimatePresence mode="wait">
               <motion.div
@@ -1028,43 +1214,95 @@ export default function App() {
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -8, scale: 0.99 }}
                 transition={{ duration: 0.2, ease: "easeOut" }}
-                className="w-full h-full"
+                className="w-full min-h-full"
               >
                 {currentView === "photos" && (
-                  <TimelineGrid
-                    photos={visiblePhotos}
-                    gridDensity={gridDensity}
-                    timelineZoom={timelineZoom}
-                    columnCount={columnCount}
-                    onChangeColumnCount={handleColumnCountChange}
-                    selectedPhotoIds={selectedPhotoIds}
-                    onToggleSelectPhoto={handleToggleSelectPhoto}
-                    onOpenPhoto={(photo) => {
-                      navigateTo({ activePhotoId: photo.id }, visiblePhotos);
-                    }}
-                    onToggleFavorite={handleToggleFavorite}
-                    sortBy={sortBy}
-                    sortOrder={sortOrder}
-                  />
+                  <>
+                    {(permissionState === "prompt" || permissionState === "denied") && photos.length === 0 ? (
+                      <AndroidPermissionView
+                        permissionState={permissionState}
+                        onPermissionGranted={handlePermissionGranted}
+                        onOpenCustomPicker={() => deviceFileInputRef.current?.click()}
+                      />
+                    ) : visiblePhotos.length === 0 ? (
+                      <EmptyGalleryState
+                        view="photos"
+                        onTakePhoto={() => cameraPhotoInputRef.current?.click()}
+                        onRecordVideo={() => cameraVideoInputRef.current?.click()}
+                        onPickMedia={() => deviceFileInputRef.current?.click()}
+                        onScanFolder={() => folderInputRef.current?.click()}
+                      />
+                    ) : (
+                      <>
+                        {permissionState === "limited" && (
+                          <div className="mx-4 sm:mx-6 mt-3 p-3 rounded-2xl bg-amber-950/40 border border-amber-500/30 flex items-center justify-between text-xs text-amber-200">
+                            <div className="flex items-center gap-2">
+                              <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
+                              <span>Showing selected photos and videos from your Android device.</span>
+                            </div>
+                            <button
+                              onClick={() => deviceFileInputRef.current?.click()}
+                              className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-xl text-xs transition-colors shrink-0 cursor-pointer shadow-sm"
+                            >
+                              Add More
+                            </button>
+                          </div>
+                        )}
+                        <TimelineGrid
+                          photos={visiblePhotos}
+                          gridDensity={gridDensity}
+                          timelineZoom={timelineZoom}
+                          columnCount={columnCount}
+                          onChangeColumnCount={handleColumnCountChange}
+                          selectedPhotoIds={selectedPhotoIds}
+                          onToggleSelectPhoto={handleToggleSelectPhoto}
+                          onOpenPhoto={(photo) => {
+                            navigateTo({ activePhotoId: photo.id }, visiblePhotos);
+                          }}
+                          onToggleFavorite={handleToggleFavorite}
+                          sortBy={sortBy}
+                          sortOrder={sortOrder}
+                        />
+                      </>
+                    )}
+                  </>
                 )}
 
                 {currentView === "videos" && (
-                  <TimelineGrid
-                    photos={visiblePhotos.filter((p) => p.isVideo)}
-                    gridDensity={gridDensity}
-                    timelineZoom={timelineZoom}
-                    columnCount={columnCount}
-                    onChangeColumnCount={handleColumnCountChange}
-                    selectedPhotoIds={selectedPhotoIds}
-                    onToggleSelectPhoto={handleToggleSelectPhoto}
-                    onOpenPhoto={(photo) => {
-                      const videoList = visiblePhotos.filter((p) => p.isVideo);
-                      navigateTo({ activePhotoId: photo.id }, videoList);
-                    }}
-                    onToggleFavorite={handleToggleFavorite}
-                    sortBy={sortBy}
-                    sortOrder={sortOrder}
-                  />
+                  <>
+                    {(permissionState === "prompt" || permissionState === "denied") && photos.length === 0 ? (
+                      <AndroidPermissionView
+                        permissionState={permissionState}
+                        onPermissionGranted={handlePermissionGranted}
+                        onOpenCustomPicker={() => deviceFileInputRef.current?.click()}
+                      />
+                    ) : visiblePhotos.filter((p) => p.isVideo).length === 0 ? (
+                      <EmptyGalleryState
+                        view="videos"
+                        onTakePhoto={() => cameraPhotoInputRef.current?.click()}
+                        onRecordVideo={() => cameraVideoInputRef.current?.click()}
+                        onPickMedia={() => deviceFileInputRef.current?.click()}
+                        onScanFolder={() => folderInputRef.current?.click()}
+                      />
+                    ) : (
+                      <TimelineGrid
+                        photos={visiblePhotos.filter((p) => p.isVideo)}
+                        gridDensity={gridDensity}
+                        timelineZoom={timelineZoom}
+                        columnCount={columnCount}
+                        onChangeColumnCount={handleColumnCountChange}
+                        selectedPhotoIds={selectedPhotoIds}
+                        onToggleSelectPhoto={handleToggleSelectPhoto}
+                        onOpenPhoto={(photo) => {
+                          const videoList = visiblePhotos.filter((p) => p.isVideo);
+                          navigateTo({ activePhotoId: photo.id }, videoList);
+                        }}
+                        onToggleFavorite={handleToggleFavorite}
+                        sortBy={sortBy}
+                        sortOrder={sortOrder}
+                      />
+                    )}
+                  </>
                 )}
 
                 {currentView === "albums" && (
@@ -1076,6 +1314,7 @@ export default function App() {
                     onSelectAlbum={(albumId) => navigateTo({ view: "albums", albumId })}
                     onCreateAlbum={handleCreateAlbum}
                     onEditAlbum={handleEditAlbum}
+                    onChangeAlbumCover={handleChangeAlbumCover}
                     onAddPhotosToAlbum={handleAddPhotosToAlbum}
                     onRemoveFromAlbum={handleRemoveFromAlbum}
                     onDeleteAlbum={handleDeleteAlbum}
@@ -1095,7 +1334,7 @@ export default function App() {
                     photos={photos.filter((p) => !p.isTrash && !p.isHidden)}
                     selectedStoryIdProp={navState.storyId}
                     onSelectStory={(storyId) => navigateTo({ view: "memories", storyId })}
-                    onAddStory={(story) => setStories((prev) => [story, ...prev])}
+                    onAddStory={(story) => setCustomStories((prev) => [story, ...prev])}
                     onOpenPhoto={(photo, scopedList) => {
                       navigateTo({ activePhotoId: photo.id }, scopedList || null);
                     }}
@@ -1249,13 +1488,64 @@ export default function App() {
         />
       )}
 
-      {/* Upload Photo Modal */}
+      {/* Upload Photo & Video Modal */}
       {showUploadModal && (
         <UploadModal
           onAddPhoto={handleAddUploadedPhoto}
+          onAddMultiplePhotos={handleImportDevicePhotos}
+          onOpenDeviceSync={() => {
+            setShowUploadModal(false);
+            setShowDeviceSyncModal(true);
+          }}
           onClose={() => setShowUploadModal(false)}
         />
       )}
+
+      {/* Real Phone Storage & APK Media Scanner Modal */}
+      <DeviceMediaSyncModal
+        isOpen={showDeviceSyncModal}
+        onClose={() => setShowDeviceSyncModal(false)}
+        onImportPhotos={handleImportDevicePhotos}
+        currentPhotoCount={photos.length}
+      />
+
+      {/* Hidden Native Device Inputs for Direct Real Device Access */}
+      <input
+        ref={deviceFileInputRef}
+        type="file"
+        multiple
+        accept="image/*,video/*"
+        className="hidden"
+        onChange={handleDeviceFileInputChange}
+      />
+      <input
+        ref={cameraPhotoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={handleDeviceFileInputChange}
+      />
+      <input
+        ref={cameraVideoInputRef}
+        type="file"
+        accept="video/*"
+        capture="environment"
+        className="hidden"
+        onChange={handleDeviceFileInputChange}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        // @ts-ignore
+        webkitdirectory=""
+        className="hidden"
+        onChange={handleDeviceFileInputChange}
+      />
+
+      {/* App Opening Splash Screen with Centered Normal-Sized Logo */}
+      <SplashScreen isReady={isAppReady} minDurationMs={1200} />
     </div>
   );
 }

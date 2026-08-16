@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Photo, GridDensity, TimelineZoom, SortByOption, SortOrderOption } from "../types";
 import { haptics } from "../utils/haptics";
+import { UnifiedShareModal } from "./UnifiedShareModal";
 
 interface TimelineGridProps {
   photos: Photo[];
@@ -48,8 +49,7 @@ const PhotoGridItem: React.FC<PhotoGridItemProps> = ({
   onSharePhoto,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const DEFAULT_FALLBACK_VIDEO = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
-  const [videoSrc, setVideoSrc] = useState<string>(photo.videoUrl || photo.highResUrl || DEFAULT_FALLBACK_VIDEO);
+  const videoSrc = photo.videoUrl || photo.url || "";
   const [hasVideoError, setHasVideoError] = useState<boolean>(false);
   const holdTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isHoldRef = useRef<boolean>(false);
@@ -148,11 +148,7 @@ const PhotoGridItem: React.FC<PhotoGridItemProps> = ({
           muted
           playsInline
           onError={() => {
-            if (videoSrc !== DEFAULT_FALLBACK_VIDEO) {
-              setVideoSrc(DEFAULT_FALLBACK_VIDEO);
-            } else {
-              setHasVideoError(true);
-            }
+            setHasVideoError(true);
           }}
           className="w-full h-full object-cover pointer-events-none"
         />
@@ -165,51 +161,15 @@ const PhotoGridItem: React.FC<PhotoGridItemProps> = ({
         />
       )}
 
-      {/* Top Badges Bar (Share on Hover) */}
-      {columnCount <= 6 && (
-        <div className="absolute top-1.5 right-1.5 flex items-center justify-end pointer-events-none z-10">
-          <div className="pointer-events-auto">
-            <button
-              onClick={(e) => onSharePhoto(photo, e)}
-              className="p-1 rounded-full bg-slate-950/70 hover:bg-slate-900 backdrop-blur-md text-slate-300 hover:text-sky-400 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
-              title="Share Photo"
-            >
-              <Share2 className="w-3.5 h-3.5" />
-            </button>
+      {/* Video Indicator: Minimal Play Button & Duration Timestamp */}
+      {(photo.isVideo || photo.duration) && (
+        <div className="absolute inset-x-2 bottom-2 flex items-center justify-between pointer-events-none z-10">
+          <div className="w-6 h-6 rounded-full bg-slate-950/75 border border-white/20 backdrop-blur-md flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+            <Play className="w-3 h-3 fill-white text-white translate-x-[0.5px]" />
           </div>
-        </div>
-      )}
-
-      {/* Video Badge */}
-      {photo.isVideo && (
-        <>
-          <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded-lg bg-slate-950/85 backdrop-blur-md text-[10px] font-bold text-slate-100 flex items-center gap-1 border border-slate-700/60 shadow-lg pointer-events-none z-10">
-            <Play className="w-3 h-3 fill-indigo-400 text-indigo-400" />
-            <span>{photo.duration || "0:15"}</span>
-          </div>
-
-          {/* Center Play Button Overlay on Hover */}
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-            <div className="w-10 h-10 rounded-full bg-slate-950/80 border border-indigo-500/50 backdrop-blur-md flex items-center justify-center shadow-xl transform group-hover:scale-110 transition-transform">
-              <Play className="w-5 h-5 fill-white text-white ml-0.5" />
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Hover Overlay Title */}
-      {columnCount <= 5 && (
-        <div
-          className={`absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-slate-950 via-slate-950/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end pointer-events-none z-10 ${
-            photo.isVideo ? "pl-14" : ""
-          }`}
-        >
-          <p className="text-xs font-semibold text-slate-100 truncate">
-            {photo.title}
-          </p>
-          <p className="text-[10px] text-slate-400 truncate">
-            {photo.location?.name}
-          </p>
+          <span className="px-1.5 py-0.5 rounded-md bg-slate-950/80 border border-white/10 backdrop-blur-md text-[10px] sm:text-[11px] font-mono font-semibold text-white/95 shadow-md">
+            {photo.duration || "0:15"}
+          </span>
         </div>
       )}
     </div>
@@ -248,27 +208,14 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
   const initialPinchDistance = useRef<number | null>(null);
   const [showPinchToast, setShowPinchToast] = useState<boolean>(false);
   const [shareToastText, setShareToastText] = useState<string | null>(null);
+  const [sharePhotoTarget, setSharePhotoTarget] = useState<Photo | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const gridContainerRef = useRef<HTMLDivElement>(null);
 
   const handleSharePhoto = (photo: Photo, e: React.MouseEvent) => {
     e.stopPropagation();
-    const url = photo.highResUrl || photo.url;
-    if (typeof navigator !== "undefined" && navigator.share) {
-      navigator
-        .share({
-          title: photo.title,
-          text: `Check out "${photo.title}" on GalleyAR`,
-          url: url,
-        })
-        .catch(() => {});
-    } else {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(url).catch(() => {});
-      }
-      setShareToastText(`Copied link for "${photo.title}"`);
-      setTimeout(() => setShareToastText(null), 2500);
-    }
+    haptics.selection();
+    setSharePhotoTarget(photo);
   };
 
   const triggerToast = () => {
@@ -516,6 +463,17 @@ export const TimelineGrid: React.FC<TimelineGridProps> = ({
           <span>{shareToastText}</span>
         </div>
       )}
+
+      {/* Unified Share Modal for Timeline Grid Item */}
+      <UnifiedShareModal
+        isOpen={!!sharePhotoTarget}
+        photo={sharePhotoTarget}
+        onClose={() => setSharePhotoTarget(null)}
+        onShowToast={(msg) => {
+          setShareToastText(msg);
+          setTimeout(() => setShareToastText(null), 3000);
+        }}
+      />
 
       {grouped.map((group, groupIdx) => (
         <div key={groupIdx} className="flex flex-col gap-3 mb-8">

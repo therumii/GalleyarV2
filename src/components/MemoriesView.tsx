@@ -229,7 +229,7 @@ export const MemoriesView = forwardRef<MemoriesViewRef, MemoriesViewProps>(({
         narrative: result.narrative || "A beautiful memory reel curated by AI.",
         soundtrack: result.soundtrack || "Acoustic Melody",
         dateRange: "2026 Collection",
-        coverPhotoUrl: randomPhotoSet[0]?.url || "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=800&q=80",
+        coverPhotoUrl: randomPhotoSet[0]?.url || "",
         photoIds: randomPhotoSet.map((p) => p.id),
         palette: result.palette || ["#e3a857", "#2e5d88", "#f4d0a5"],
       };
@@ -246,7 +246,7 @@ export const MemoriesView = forwardRef<MemoriesViewRef, MemoriesViewProps>(({
   };
 
   return (
-    <div className="p-4 sm:p-6 space-y-8">
+    <div className="p-4 sm:p-6 space-y-8 pb-36 sm:pb-40">
       {/* Top Banner & AI Generator Button */}
       <div className="bg-gradient-to-r from-indigo-900/40 via-purple-900/30 to-slate-900 border border-indigo-500/30 p-6 rounded-3xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl relative overflow-hidden">
         <div className="space-y-1 z-10">

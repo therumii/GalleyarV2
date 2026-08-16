@@ -24,6 +24,7 @@ import {
 import { Photo } from "../types";
 import { isPinConfigured, savePin, verifyPin, removePin } from "../utils/cryptoVault";
 import { VaultPinModal } from "./VaultPinModal";
+import { BatchShareModal } from "./BatchShareModal";
 import { haptics } from "../utils/haptics";
 
 interface VaultPhotoCardProps {
@@ -162,10 +163,15 @@ export const HiddenVaultModal = forwardRef<HiddenVaultRef, HiddenVaultModalProps
   const [showChangePinModal, setShowChangePinModal] = useState(false);
   const [showAddPhotosModal, setShowAddPhotosModal] = useState(false);
   const [showDeleteVaultModal, setShowDeleteVaultModal] = useState(false);
+  const [showBatchShareModal, setShowBatchShareModal] = useState(false);
   const [selectedPhotoIdsToAdd, setSelectedPhotoIdsToAdd] = useState<string[]>([]);
 
   useImperativeHandle(ref, () => ({
     handleBack: () => {
+      if (showBatchShareModal) {
+        setShowBatchShareModal(false);
+        return true;
+      }
       if (showDeleteVaultModal) {
         setShowDeleteVaultModal(false);
         return true;
@@ -267,18 +273,7 @@ export const HiddenVaultModal = forwardRef<HiddenVaultRef, HiddenVaultModalProps
     const selected = hiddenPhotos.filter((p) => selectedVaultPhotoIds.includes(p.id));
     if (selected.length === 0) return;
     haptics.selection();
-    const urls = selected.map((p) => p.highResUrl || p.url).join("\n");
-    if (typeof navigator !== "undefined" && navigator.share) {
-      navigator.share({
-        title: `${selected.length} Vault Photos`,
-        url: selected[0]?.highResUrl || selected[0]?.url,
-      }).catch(() => {});
-    } else {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(urls).catch(() => {});
-      }
-      alert(`Copied links for ${selected.length} vault photos!`);
-    }
+    setShowBatchShareModal(true);
   };
 
   const handlePinSubmit = async (e: React.FormEvent) => {
@@ -705,6 +700,15 @@ export const HiddenVaultModal = forwardRef<HiddenVaultRef, HiddenVaultModalProps
       <VaultPinModal
         isOpen={showChangePinModal}
         onClose={() => setShowChangePinModal(false)}
+      />
+
+      {/* Batch Share Modal for Selected Vault Items */}
+      <BatchShareModal
+        isOpen={showBatchShareModal}
+        selectedPhotos={hiddenPhotos.filter((p) => selectedVaultPhotoIds.includes(p.id))}
+        onClose={() => setShowBatchShareModal(false)}
+        onShowToast={() => {}}
+        title="Share Vault Media"
       />
 
       {/* Delete Confirmation Modal for Selected Vault Items */}

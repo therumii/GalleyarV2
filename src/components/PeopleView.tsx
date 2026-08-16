@@ -67,7 +67,7 @@ export const PeopleView = forwardRef<PeopleViewRef, PeopleViewProps>(({
   };
 
   return (
-    <div className="p-4 sm:p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6 pb-28 sm:pb-32">
       {selectedPerson ? (
         <div className="space-y-6 animate-fade-in">
           {/* Person Header */}

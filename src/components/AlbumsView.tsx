@@ -24,6 +24,7 @@ import {
   MoreVertical,
   Copy,
   FolderPlus,
+  Play,
 } from "lucide-react";
 import { Album, Photo } from "../types";
 import { BatchShareModal } from "./BatchShareModal";
@@ -36,6 +37,7 @@ interface AlbumPhotoCardProps {
   onToggleSelectPhoto: (photoId: string) => void;
   onOpenPhoto: (photo: Photo, albumPhotosList?: Photo[]) => void;
   onRemoveFromAlbum?: (albumId: string, photoId: string) => void;
+  onSetAsCover?: (photoUrl: string) => void;
   selectedAlbumId: string;
   onOpenMoveCopyModal?: (photoIds: string[]) => void;
 }
@@ -48,6 +50,7 @@ const AlbumPhotoCard: React.FC<AlbumPhotoCardProps> = ({
   onToggleSelectPhoto,
   onOpenPhoto,
   onRemoveFromAlbum,
+  onSetAsCover,
   selectedAlbumId,
   onOpenMoveCopyModal,
 }) => {
@@ -120,46 +123,31 @@ const AlbumPhotoCard: React.FC<AlbumPhotoCardProps> = ({
         className="w-full h-full object-cover group-hover:scale-105 transition-transform pointer-events-none"
       />
 
-      {/* Top Left: Three Dots Move/Copy Action */}
-      {onOpenMoveCopyModal && (
-        <div className="absolute top-2 left-2 z-10">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenMoveCopyModal([photo.id]);
-            }}
-            className="p-1 rounded-full bg-slate-950/70 text-slate-300 hover:text-white hover:bg-slate-900 transition-all cursor-pointer opacity-0 group-hover:opacity-100 shadow-md"
-            title="Move or Copy Photo"
-          >
-            <MoreVertical className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      {/* Quick "Set as Album Cover" Button */}
+      {onSetAsCover && !hasSelectionMode && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onSetAsCover(photo.url);
+          }}
+          className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-950/80 hover:bg-indigo-600 text-slate-300 hover:text-white border border-slate-700/60 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all shadow-md z-10 cursor-pointer"
+          title="Set as album cover"
+        >
+          <Image className="w-3.5 h-3.5" />
+        </button>
       )}
 
-
-
-      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-3 flex flex-col justify-end">
-        <p className="text-xs font-semibold text-slate-100 truncate">
-          {photo.title}
-        </p>
-        <div className="flex items-center justify-between mt-1">
-          <span className="text-[10px] text-slate-400 truncate">
-            {photo.location?.name}
+      {/* Video Indicator: Minimal Play Button & Duration Timestamp */}
+      {(photo.isVideo || photo.duration) && (
+        <div className="absolute inset-x-2 bottom-2 flex items-center justify-between pointer-events-none z-10">
+          <div className="w-6 h-6 rounded-full bg-slate-950/75 border border-white/20 backdrop-blur-md flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+            <Play className="w-3 h-3 fill-white text-white translate-x-[0.5px]" />
+          </div>
+          <span className="px-1.5 py-0.5 rounded-md bg-slate-950/80 border border-white/10 backdrop-blur-md text-[10px] sm:text-[11px] font-mono font-semibold text-white/95 shadow-md">
+            {photo.duration || "0:15"}
           </span>
-          {onRemoveFromAlbum && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemoveFromAlbum(selectedAlbumId, photo.id);
-              }}
-              className="p-1 rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/40 text-[10px] font-bold flex items-center gap-1 border border-rose-500/30"
-              title="Remove from Album"
-            >
-              <MinusCircle className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -169,6 +157,7 @@ interface AlbumsViewProps {
   photos: Photo[];
   onCreateAlbum: (name: string, description: string) => void;
   onEditAlbum?: (albumId: string, name: string, description: string) => void;
+  onChangeAlbumCover?: (albumId: string, coverUrl: string) => void;
   onAddPhotosToAlbum?: (albumId: string, photoIds: string[]) => void;
   onRemoveFromAlbum?: (albumId: string, photoId: string) => void;
   onDeleteAlbum?: (albumId: string) => void;
@@ -189,6 +178,7 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
   photos = [],
   onCreateAlbum,
   onEditAlbum,
+  onChangeAlbumCover,
   onAddPhotosToAlbum,
   onRemoveFromAlbum,
   onDeleteAlbum,
@@ -238,8 +228,18 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
   const [targetPhotoIdsForMoveCopy, setTargetPhotoIdsForMoveCopy] = useState<string[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Change Cover Photo Modal State
+  const [showCoverPickerModal, setShowCoverPickerModal] = useState(false);
+  const [coverPickerAlbum, setCoverPickerAlbum] = useState<Album | null>(null);
+  const [coverPickerTab, setCoverPickerTab] = useState<"album" | "all">("album");
+
   useImperativeHandle(ref, () => ({
     handleBack: () => {
+      if (showCoverPickerModal) {
+        setShowCoverPickerModal(false);
+        setCoverPickerAlbum(null);
+        return true;
+      }
       if (showCreateModal) {
         setShowCreateModal(false);
         return true;
@@ -273,6 +273,22 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
       return false;
     },
   }));
+
+  const handleOpenCoverPicker = (album: Album, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setCoverPickerAlbum(album);
+    setCoverPickerTab("album");
+    setShowCoverPickerModal(true);
+  };
+
+  const handleSelectCoverPhoto = (coverUrl: string) => {
+    if (!coverPickerAlbum) return;
+    onChangeAlbumCover?.(coverPickerAlbum.id, coverUrl);
+    setToastMessage(`Album cover updated for "${coverPickerAlbum.name}"!`);
+    setTimeout(() => setToastMessage(null), 3000);
+    setShowCoverPickerModal(false);
+    setCoverPickerAlbum(null);
+  };
 
   const handleOpenMoveCopy = (photoIds: string[]) => {
     if (photoIds.length === 0) return;
@@ -432,7 +448,7 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
   };
 
   return (
-    <div className="p-4 sm:p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6 pb-36 sm:pb-40">
       {/* If viewing a specific album */}
       {selectedAlbum ? (
         <div className="space-y-6 animate-fade-in">
@@ -578,6 +594,16 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
                   <span>Add Photos</span>
                 </button>
 
+                {/* Change Cover Photo */}
+                <button
+                  onClick={() => handleOpenCoverPicker(selectedAlbum)}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                  title="Change album cover photo"
+                >
+                  <Image className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Cover</span>
+                </button>
+
                 {/* Edit Album Details */}
                 <button
                   onClick={openEditModal}
@@ -638,6 +664,7 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
                   onToggleSelectPhoto={(id) => handleToggleSelectPhotoInAlbum(id)}
                   onOpenPhoto={onOpenPhoto}
                   onRemoveFromAlbum={onRemoveFromAlbum}
+                  onSetAsCover={(url) => handleSelectCoverPhoto(url)}
                   selectedAlbumId={selectedAlbum.id}
                   onOpenMoveCopyModal={(ids) => handleOpenMoveCopy(ids)}
                 />
@@ -673,13 +700,13 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
                 ? photos.filter((p) => p.isFavorite && !p.isTrash && !p.isHidden)
                 : photos.filter((p) => album.photoIds?.includes(p.id) && !p.isTrash && !p.isHidden);
               const count = validAlbumPhotos.length;
-              const displayCover = validAlbumPhotos[0]?.url || album.coverUrl;
+              const displayCover = album.coverUrl || validAlbumPhotos[0]?.url;
 
               return (
                 <div
                   key={album.id}
                   onClick={() => handleSetSelectedAlbumId(album.id)}
-                  className="group rounded-2xl bg-slate-900/80 border border-slate-800/80 hover:border-indigo-500/50 hover:bg-slate-900 p-4 transition-all duration-300 cursor-pointer flex flex-col justify-between shadow-sm"
+                  className="group rounded-2xl bg-slate-900/80 border border-slate-800/80 hover:border-indigo-500/50 hover:bg-slate-900 p-4 transition-all duration-300 cursor-pointer flex flex-col justify-between shadow-sm relative"
                 >
                   <div className="aspect-video w-full rounded-xl overflow-hidden bg-slate-950 mb-3 relative">
                     {displayCover ? (
@@ -697,6 +724,15 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
                     <div className="absolute top-2 left-2 p-1.5 rounded-lg bg-slate-950/80 backdrop-blur-md text-indigo-400 border border-slate-700/50">
                       <IconComponent className="w-4 h-4" />
                     </div>
+
+                    {/* Change Cover Button on Album Card */}
+                    <button
+                      onClick={(e) => handleOpenCoverPicker(album, e)}
+                      className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-950/80 hover:bg-indigo-600 text-slate-300 hover:text-white border border-slate-700/60 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all shadow-md z-10 cursor-pointer"
+                      title="Change album cover"
+                    >
+                      <Image className="w-3.5 h-3.5" />
+                    </button>
 
                     <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded-md bg-slate-950/80 backdrop-blur-md text-[10px] font-bold text-slate-200">
                       {count} items
@@ -826,6 +862,44 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
                   rows={3}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
+              </div>
+
+              {/* Cover Photo Option in Edit Modal */}
+              <div className="pt-1">
+                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                  Album Cover Photo
+                </label>
+                <div className="flex items-center gap-3 p-2.5 bg-slate-950 rounded-2xl border border-slate-800">
+                  <div className="w-12 h-12 rounded-xl overflow-hidden bg-slate-900 shrink-0 border border-slate-700/50">
+                    {selectedAlbum.coverUrl ? (
+                      <img
+                        src={selectedAlbum.coverUrl}
+                        alt="Current Cover"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-slate-500">
+                        <Image className="w-5 h-5" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-slate-300 truncate">
+                      {selectedAlbum.coverUrl ? "Custom cover selected" : "Default album photo"}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowEditModal(false);
+                        handleOpenCoverPicker(selectedAlbum);
+                      }}
+                      className="mt-1 text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Image className="w-3.5 h-3.5" />
+                      <span>Choose New Cover Photo</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
@@ -1117,6 +1191,135 @@ export const AlbumsView = forwardRef<AlbumsViewRef, AlbumsViewProps>(({
           setTimeout(() => setToastMessage(null), 3500);
         }}
       />
+
+      {/* Change Album Cover Photo Picker Modal */}
+      {showCoverPickerModal && coverPickerAlbum && (() => {
+        const isFavCoverAlbum = coverPickerAlbum.id === "album-favorites";
+        const albumSpecificPhotos = isFavCoverAlbum
+          ? photos.filter((p) => p.isFavorite && !p.isTrash && !p.isHidden)
+          : photos.filter((p) => coverPickerAlbum.photoIds.includes(p.id) && !p.isTrash && !p.isHidden);
+
+        const displayedPhotos =
+          coverPickerTab === "album" && albumSpecificPhotos.length > 0
+            ? albumSpecificPhotos
+            : photos.filter((p) => !p.isTrash && !p.isHidden);
+
+        const currentCover = coverPickerAlbum.coverUrl || albumSpecificPhotos[0]?.url;
+
+        return (
+          <div className="fixed inset-0 z-[75] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full max-h-[88vh] h-full sm:h-auto flex flex-col p-4 sm:p-6 shadow-2xl animate-fade-in overflow-hidden">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3.5 shrink-0 gap-2">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2 truncate">
+                    <Image className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <span className="truncate">Set Cover Photo for "{coverPickerAlbum.name}"</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 truncate">
+                    Tap any photo to set it as the cover photo for this album
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowCoverPickerModal(false);
+                    setCoverPickerAlbum(null);
+                  }}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Source Tabs (From Album vs All Photos) */}
+              <div className="flex items-center gap-2 pt-3 pb-1 shrink-0">
+                <button
+                  onClick={() => setCoverPickerTab("album")}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    coverPickerTab === "album"
+                      ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                      : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                  }`}
+                >
+                  <Folder className="w-3.5 h-3.5" />
+                  <span>From Album ({albumSpecificPhotos.length})</span>
+                </button>
+                <button
+                  onClick={() => setCoverPickerTab("all")}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    coverPickerTab === "all"
+                      ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                      : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                  }`}
+                >
+                  <Image className="w-3.5 h-3.5" />
+                  <span>All Gallery Photos ({photos.filter((p) => !p.isTrash && !p.isHidden).length})</span>
+                </button>
+              </div>
+
+              {/* Scrollable Photo Grid */}
+              <div className="flex-1 min-h-0 overflow-y-auto py-3 px-1 my-1">
+                {displayedPhotos.length === 0 ? (
+                  <div className="text-center py-16 text-slate-500 space-y-2">
+                    <Image className="w-10 h-10 mx-auto text-slate-600" />
+                    <p className="text-xs text-slate-400">No photos available in this selection.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {displayedPhotos.map((photo) => {
+                      const isCurrentCoverPhoto = currentCover === photo.url;
+
+                      return (
+                        <div
+                          key={photo.id}
+                          onClick={() => handleSelectCoverPhoto(photo.url)}
+                          className={`group relative aspect-square rounded-2xl overflow-hidden border transition-all cursor-pointer select-none shadow-md ${
+                            isCurrentCoverPhoto
+                              ? "border-indigo-500 ring-2 ring-indigo-500/60 scale-[0.98]"
+                              : "border-slate-800 hover:border-indigo-500/70 hover:scale-[1.02]"
+                          }`}
+                        >
+                          <img
+                            src={photo.url}
+                            alt={photo.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          />
+
+                          {isCurrentCoverPhoto && (
+                            <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[10px] font-bold shadow-md flex items-center gap-1 z-10">
+                              <Check className="w-3 h-3 stroke-[3]" />
+                              <span>Current</span>
+                            </div>
+                          )}
+
+                          <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent">
+                            <p className="text-[10px] font-medium text-slate-200 truncate">
+                              {photo.title}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="border-t border-slate-800 pt-3 shrink-0 flex justify-end">
+                <button
+                  onClick={() => {
+                    setShowCoverPickerModal(false);
+                    setCoverPickerAlbum(null);
+                  }}
+                  className="px-5 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Floating Toast Notice */}
       {toastMessage && (

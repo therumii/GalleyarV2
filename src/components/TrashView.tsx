@@ -16,7 +16,7 @@ export const TrashView: React.FC<TrashViewProps> = ({
   onEmptyTrash,
 }) => {
   return (
-    <div className="p-4 sm:p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6 pb-28 sm:pb-32">
       {/* Trash Header */}
       <div className="bg-slate-900/90 border border-slate-800 p-5 rounded-3xl flex items-center justify-between">
         <div>

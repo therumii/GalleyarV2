@@ -11,8 +11,11 @@ import {
   Plus,
   Zap,
   X,
+  Smartphone,
+  HardDrive,
 } from "lucide-react";
 import { ViewMode } from "../types";
+import { AppLogo } from "./AppLogo";
 
 interface SidebarProps {
   currentView: ViewMode;
@@ -21,6 +24,7 @@ interface SidebarProps {
   trashCount: number;
   hiddenCount: number;
   onOpenUpload: () => void;
+  onOpenDeviceSync?: () => void;
   isOpen: boolean;
   onClose?: () => void;
 }
@@ -32,6 +36,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   trashCount,
   hiddenCount,
   onOpenUpload,
+  onOpenDeviceSync,
   isOpen,
   onClose,
 }) => {
@@ -135,11 +140,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-5 flex flex-col gap-4 border-b border-slate-800/60">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 p-0.5 shadow-xl shadow-indigo-500/25 flex items-center justify-center shrink-0">
-              <div className="w-full h-full bg-slate-950 rounded-[14px] flex items-center justify-center">
-                <Zap className="w-5 h-5 text-indigo-400" />
-              </div>
-            </div>
+            <AppLogo size="md" glow={true} />
             <div>
               <h1 className="font-black text-slate-100 text-xl tracking-tight flex items-center gap-1.5">
                 Galleyar
@@ -158,14 +159,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* Upload Button */}
-        <button
-          onClick={onOpenUpload}
-          className="w-full py-2.5 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Upload Photos</span>
-        </button>
+        {/* Action Buttons */}
+        <div className="space-y-2">
+          <button
+            onClick={onOpenUpload}
+            className="w-full py-2.5 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Upload Media</span>
+          </button>
+
+          {onOpenDeviceSync && (
+            <button
+              onClick={onOpenDeviceSync}
+              className="w-full py-2 px-3.5 rounded-2xl bg-slate-800/90 hover:bg-slate-750 active:scale-[0.98] text-indigo-300 border border-indigo-500/30 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer"
+            >
+              <Smartphone className="w-4 h-4 text-indigo-400" />
+              <span>📱 Load Phone Media</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main Navigation List */}

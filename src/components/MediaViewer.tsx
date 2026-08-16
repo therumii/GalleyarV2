@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { MediaActionBar } from "./MediaActionBar";
+import { UnifiedShareModal } from "./UnifiedShareModal";
 import {
   X,
   ChevronLeft,
@@ -14,6 +15,8 @@ import {
   Volume2,
   VolumeX,
   RotateCcw,
+  RotateCw,
+  Repeat,
   Maximize2,
   Minimize2,
   Loader2,
@@ -93,8 +96,34 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
   const [showOCRModal, setShowOCRModal] = useState(false);
   const [showFaceBoxes, setShowFaceBoxes] = useState(true);
   const [copiedText, setCopiedText] = useState(false);
-  const [showShareToast, setShowShareToast] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareToastMessage, setShareToastMessage] = useState<string | null>(null);
   const [showOverlayControls, setShowOverlayControls] = useState(true);
+
+  // Auto-hide overlay controls during video playback after 4.5s of inactivity
+  const autoHideTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetAutoHideTimer = useCallback(() => {
+    if (autoHideTimerRef.current) {
+      clearTimeout(autoHideTimerRef.current);
+      autoHideTimerRef.current = null;
+    }
+    if (photo.isVideo && showOverlayControls) {
+      autoHideTimerRef.current = setTimeout(() => {
+        // Do not auto-hide if any modal or drawer is open
+        if (!showDeleteModal && !showOCRModal && !showInfoPanel && !showOtherOptions) {
+          setShowOverlayControls(false);
+        }
+      }, 4500);
+    }
+  }, [photo.isVideo, showOverlayControls, showDeleteModal, showOCRModal, showInfoPanel, showOtherOptions]);
+
+  useEffect(() => {
+    resetAutoHideTimer();
+    return () => {
+      if (autoHideTimerRef.current) clearTimeout(autoHideTimerRef.current);
+    };
+  }, [resetAutoHideTimer]);
 
   // Photo zoom & pan state
   const [photoScale, setPhotoScale] = useState(1);
@@ -257,6 +286,8 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
         handleNext();
       } else if (e.key === "f" || e.key === "F") {
         onToggleFavorite(photo.id);
+      } else if (e.key === "s" || e.key === "S") {
+        setShowShareModal(true);
       } else if (e.key === "i" || e.key === "I") {
         setShowInfoPanel((prev) => !prev);
       }
@@ -277,12 +308,12 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (isAnimatingRef.current) return;
 
-    // Do not capture gestures if clicking interactive controls or buttons
+    // Do not capture gestures if clicking interactive buttons, inputs, links, or specific controls
     const target = e.target as HTMLElement | null;
     if (
       target &&
       target.closest(
-        "button, a, input, select, textarea, video, [role='button'], .no-gesture, .interactive, [data-interactive='true']"
+        "button, a, input, select, textarea, [role='button'], .no-gesture, .interactive, [data-interactive='true']"
       )
     ) {
       pointerStartRef.current = null;
@@ -299,11 +330,17 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
       return;
     }
 
-    // Preserve Android system edge back gesture (< 24px)
-    if (e.clientX < 24 || e.clientX > window.innerWidth - 24) {
+    // Preserve system edge back gesture (< 16px)
+    if (e.clientX < 16 || e.clientX > window.innerWidth - 16) {
       pointerStartRef.current = null;
       gestureStateRef.current = "NONE";
       return;
+    }
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignored for non-pointer capture environments
     }
 
     activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -369,15 +406,15 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
     const absDx = Math.abs(dx);
     const absDy = Math.abs(dy);
 
-    // Classify gesture axis if not locked yet (> 20px threshold)
+    // Classify gesture axis if not locked yet (> 10px threshold)
     if (gestureStateRef.current === "NONE") {
       const dist = Math.hypot(dx, dy);
-      if (dist > 20) {
+      if (dist > 10) {
         if (!photo.isVideo && photoScaleRef.current > 1.05) {
           gestureStateRef.current = "PHOTO_PAN";
-        } else if (absDx > absDy * 1.3) {
+        } else if (absDx >= absDy * 1.05) {
           gestureStateRef.current = "HORIZONTAL_SWIPE";
-        } else if (absDy > absDx * 1.5 && absDy > 60) {
+        } else if (absDy > absDx * 1.05) {
           gestureStateRef.current = "VERTICAL_DISMISS";
         }
       }
@@ -391,13 +428,13 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
         (safeIndex === photosList.length - 1 && dx < 0);
 
       if (isBoundary) {
-        effectiveX = dx * 0.25; // Subtle rubber-band resistance
+        effectiveX = dx * 0.28; // Subtle rubber-band resistance
         if (!hasTriggeredEdgeResistanceRef.current && Math.abs(dx) > 15) {
           haptics.warning();
           hasTriggeredEdgeResistanceRef.current = true;
         }
       } else {
-        const threshold = window.innerWidth * 0.20;
+        const threshold = Math.min(100, window.innerWidth * 0.16);
         if (!hasTriggeredSwipeHapticRef.current && Math.abs(dx) > threshold) {
           haptics.light();
           hasTriggeredSwipeHapticRef.current = true;
@@ -418,7 +455,7 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
       setShowOverlayControls(false);
       dragYRef.current = dy;
       const absY = Math.abs(dy);
-      const threshold = window.innerHeight * 0.20;
+      const threshold = window.innerHeight * 0.18;
 
       if (!hasTriggeredDismissHapticRef.current && absY > threshold) {
         haptics.light();
@@ -462,6 +499,14 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     activePointersRef.current.delete(e.pointerId);
 
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignored
+    }
+
     if (activePointersRef.current.size < 2) {
       initialPinchDistRef.current = null;
     }
@@ -487,8 +532,8 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
     if (gestureStateRef.current === "HORIZONTAL_SWIPE") {
       const dx = dragXRef.current;
       const velocity = Math.abs(dx) / Math.max(1, duration);
-      const isFlick = velocity > 0.25 && Math.abs(dx) > 30;
-      const threshold = Math.min(120, vw * 0.18);
+      const isFlick = velocity > 0.20 && Math.abs(dx) > 20;
+      const threshold = Math.min(90, vw * 0.15);
 
       if (
         (dx < -threshold || (isFlick && dx < 0)) &&
@@ -544,9 +589,10 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
     } else if (gestureStateRef.current === "VERTICAL_DISMISS") {
       const dy = dragYRef.current;
       const absY = Math.abs(dy);
-      // Require deliberate, intentional vertical drag (>220px or 25% of viewport height)
-      const minDismissThreshold = Math.min(220, vh * 0.25);
-      const isIntentionalDismiss = absY >= minDismissThreshold && absY > 150;
+      const verticalVelocity = absY / Math.max(1, duration);
+      const isVerticalFlick = verticalVelocity > 0.32 && absY > 40;
+      const minDismissThreshold = Math.min(140, vh * 0.18);
+      const isIntentionalDismiss = absY >= minDismissThreshold || isVerticalFlick;
 
       if (isIntentionalDismiss) {
         // Confirm Dismissal
@@ -581,7 +627,7 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
           setShowOverlayControls(true);
         }, 200);
       }
-    } else if (gestureStateRef.current === "NONE" || totalDist < 24) {
+    } else if (gestureStateRef.current === "NONE" || totalDist < 16) {
       // Tap or small touch movement: Toggle overlay controls without exiting viewer
       if (currentSlotRef.current) {
         currentSlotRef.current.style.transition = "transform 150ms ease-out";
@@ -642,23 +688,9 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
     }
   };
 
-  const handleShare = async () => {
-    const shareUrl = photo.highResUrl || photo.url;
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: photo.title,
-          text: `Check out "${photo.title}" on GalleyAR`,
-          url: shareUrl,
-        });
-      } catch {}
-    } else {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(shareUrl).catch(() => {});
-      }
-      setShowShareToast(true);
-      setTimeout(() => setShowShareToast(false), 2500);
-    }
+  const handleShare = () => {
+    haptics.selection();
+    setShowShareModal(true);
   };
 
   const handleConfirmMoveToTrash = () => {
@@ -859,12 +891,24 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
         </button>
       )}
 
-      {/* Toast Notice */}
-      {showShareToast && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-sky-600 text-white text-xs font-bold shadow-2xl animate-fade-in">
-          Link copied to clipboard!
+      {/* Share Toast Notice */}
+      {shareToastMessage && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2 rounded-full bg-slate-900 border border-sky-500/50 text-sky-300 text-xs font-bold shadow-2xl backdrop-blur-md animate-fade-in flex items-center gap-2 pointer-events-none">
+          <Share2 className="w-3.5 h-3.5 text-sky-400" />
+          <span>{shareToastMessage}</span>
         </div>
       )}
+
+      {/* Unified Share Modal Sheet */}
+      <UnifiedShareModal
+        isOpen={showShareModal}
+        photo={photo}
+        onClose={() => setShowShareModal(false)}
+        onShowToast={(msg) => {
+          setShareToastMessage(msg);
+          setTimeout(() => setShareToastMessage(null), 3000);
+        }}
+      />
 
       {/* EXIF Info Panel Sidebar Drawer */}
       <AnimatePresence>
@@ -1149,13 +1193,14 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
   // Video playback states
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(true);
+  const [isLooping, setIsLooping] = useState<boolean>(true);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
-  const [showControls, setShowControls] = useState<boolean>(true);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasVideoError, setHasVideoError] = useState<boolean>(false);
-  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const scrubberRef = useRef<HTMLDivElement | null>(null);
 
   const [videoUrl, setVideoUrl] = useState<string>(
@@ -1195,42 +1240,109 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
     }
   }, [isActive, photo.isVideo]);
 
-  // Handle Controls Auto-hide Timeout
-  useEffect(() => {
-    if (isActive && photo.isVideo && isPlaying) {
-      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-      controlsTimeoutRef.current = setTimeout(() => {
-        setShowControls(false);
-      }, 3000);
-    }
-    return () => {
-      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    };
-  }, [isActive, photo.isVideo, isPlaying, showControls]);
-
   const togglePlayPause = (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (!videoRef.current) return;
+    haptics.selection();
     if (isPlaying) {
       videoRef.current.pause();
       setIsPlaying(false);
-      setShowControls(true);
     } else {
       videoRef.current.play().catch(() => {});
       setIsPlaying(true);
     }
   };
 
-  const handleScrubberSeek = (e: React.PointerEvent) => {
-    e.stopPropagation();
+  const handleSkipBack = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!videoRef.current) return;
+    haptics.light();
+    videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
+    setCurrentTime(videoRef.current.currentTime);
+  };
+
+  const handleSkipForward = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!videoRef.current) return;
+    haptics.light();
+    videoRef.current.currentTime = Math.min(duration || 0, videoRef.current.currentTime + 10);
+    setCurrentTime(videoRef.current.currentTime);
+  };
+
+  const handleScrubberSeek = (clientX: number) => {
     if (!scrubberRef.current || !videoRef.current) return;
     const rect = scrubberRef.current.getBoundingClientRect();
     if (rect.width === 0) return;
-    const clickX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const clickX = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const ratio = clickX / rect.width;
     const newTime = ratio * (duration || 1);
     setCurrentTime(newTime);
     videoRef.current.currentTime = newTime;
+  };
+
+  const handleScrubberPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    setIsScrubbing(true);
+    handleScrubberSeek(e.clientX);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handleScrubberPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isScrubbing) return;
+    e.stopPropagation();
+    handleScrubberSeek(e.clientX);
+  };
+
+  const handleScrubberPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isScrubbing) return;
+    e.stopPropagation();
+    setIsScrubbing(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const toggleMute = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    haptics.selection();
+    setIsMuted((prev) => {
+      const next = !prev;
+      if (videoRef.current) videoRef.current.muted = next;
+      return next;
+    });
+  };
+
+  const toggleLoop = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    haptics.selection();
+    setIsLooping((prev) => {
+      const next = !prev;
+      if (videoRef.current) videoRef.current.loop = next;
+      return next;
+    });
+  };
+
+  const cyclePlaybackRate = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    haptics.selection();
+    const rates = [0.5, 1, 1.25, 1.5, 2];
+    const nextRate = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
+    setPlaybackRate(nextRate);
+    if (videoRef.current) videoRef.current.playbackRate = nextRate;
+  };
+
+  const handleToggleFullscreen = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    haptics.selection();
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+      setIsFullscreen(false);
+    }
   };
 
   const formatTime = (secs: number) => {
@@ -1241,6 +1353,8 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
   };
 
   if (photo.isVideo) {
+    const progressPercent = duration ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
+
     return (
       <div className="relative w-full h-full flex items-center justify-center select-none overflow-hidden">
         {!hasVideoError ? (
@@ -1248,11 +1362,11 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
             ref={videoRef}
             src={videoUrl}
             playsInline
-            loop
+            loop={isLooping}
             muted={isMuted}
             preload={isActive ? "auto" : "metadata"}
             onTimeUpdate={() => {
-              if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+              if (videoRef.current && !isScrubbing) setCurrentTime(videoRef.current.currentTime);
             }}
             onLoadedMetadata={() => {
               if (videoRef.current) {
@@ -1270,12 +1384,7 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
                 setIsLoading(false);
               }
             }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowControls((prev) => !prev);
-              onToggleOverlayControls?.();
-            }}
-            className="max-h-full max-w-full object-contain pointer-events-auto shadow-2xl"
+            className="max-h-full max-w-full object-contain pointer-events-none shadow-2xl select-none touch-none"
           />
         ) : (
           <div className="p-8 rounded-3xl bg-slate-900 border border-slate-800 text-center space-y-3 max-w-sm">
@@ -1290,7 +1399,7 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
                 setIsLoading(true);
                 setVideoUrl(photo.videoUrl || DEFAULT_FALLBACK_VIDEO);
               }}
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all"
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all cursor-pointer"
             >
               Retry Loading
             </button>
@@ -1306,68 +1415,120 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
           </div>
         )}
 
-        {/* Video Overlay Controls */}
+        {/* Video Overlay Controls & Action Toggles */}
         {isActive && !hasVideoError && (
           <div
-            className={`absolute inset-0 z-20 flex flex-col justify-between p-4 sm:p-6 transition-opacity duration-300 pointer-events-none ${
-              showControls && showOverlayControls ? "opacity-100" : "opacity-0"
+            className={`absolute inset-0 z-20 flex flex-col justify-between p-4 sm:p-6 transition-all duration-200 pointer-events-none ${
+              showOverlayControls ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
-            {/* Center Big Play/Pause Toggle */}
-            <div className="flex-1 flex items-center justify-center">
+            {/* Center Big Play/Pause Toggle with 10s Skip Buttons */}
+            <div className="flex-1 flex items-center justify-center gap-6 sm:gap-10">
+              {/* Skip Back 10s */}
               <button
                 onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={handleSkipBack}
+                className="p-3.5 sm:p-4 rounded-full bg-slate-900/75 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/60 backdrop-blur-xl shadow-xl transform transition-all hover:scale-110 active:scale-90 pointer-events-auto cursor-pointer group flex items-center justify-center"
+                title="Rewind 10 seconds"
+              >
+                <RotateCcw className="w-5 h-5 sm:w-6 sm:h-6 transition-transform group-active:-rotate-45" />
+              </button>
+
+              {/* Main Play / Pause Button */}
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
                 onClick={togglePlayPause}
-                className="p-5 rounded-full bg-slate-900/80 hover:bg-slate-800/90 text-white border border-slate-700/80 backdrop-blur-xl shadow-2xl transform transition-all active:scale-95 pointer-events-auto cursor-pointer"
+                className="p-5 sm:p-6 rounded-full bg-indigo-600/90 hover:bg-indigo-500 text-white border border-indigo-400/50 backdrop-blur-xl shadow-2xl shadow-indigo-600/40 transform transition-all hover:scale-110 active:scale-95 pointer-events-auto cursor-pointer flex items-center justify-center"
+                title={isPlaying ? "Pause Video" : "Play Video"}
               >
                 {isPlaying ? (
-                  <Pause className="w-8 h-8 fill-white" />
+                  <Pause className="w-8 h-8 sm:w-10 sm:h-10 fill-white" />
                 ) : (
-                  <Play className="w-8 h-8 fill-white ml-1" />
+                  <Play className="w-8 h-8 sm:w-10 sm:h-10 fill-white ml-1" />
                 )}
+              </button>
+
+              {/* Skip Forward 10s */}
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={handleSkipForward}
+                className="p-3.5 sm:p-4 rounded-full bg-slate-900/75 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/60 backdrop-blur-xl shadow-xl transform transition-all hover:scale-110 active:scale-90 pointer-events-auto cursor-pointer group flex items-center justify-center"
+                title="Forward 10 seconds"
+              >
+                <RotateCw className="w-5 h-5 sm:w-6 sm:h-6 transition-transform group-active:rotate-45" />
               </button>
             </div>
 
-            {/* Bottom Scrubber & Video Controls */}
+            {/* Bottom Scrubber & Video Controls Bar */}
             <div
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
               className="bg-slate-950/90 border border-slate-800/90 backdrop-blur-2xl p-3 sm:p-4 rounded-2xl space-y-3 pointer-events-auto shadow-2xl max-w-2xl mx-auto w-full"
             >
-              {/* Progress Scrubber */}
+              {/* Interactive Progress Scrubber */}
               <div
                 ref={scrubberRef}
-                onPointerDown={handleScrubberSeek}
-                className="relative w-full h-3 bg-slate-800 rounded-full cursor-pointer overflow-hidden flex items-center"
+                onPointerDown={handleScrubberPointerDown}
+                onPointerMove={handleScrubberPointerMove}
+                onPointerUp={handleScrubberPointerUp}
+                onPointerCancel={handleScrubberPointerUp}
+                className="relative w-full h-4 bg-slate-900/50 rounded-full cursor-pointer flex items-center group py-1"
               >
+                <div className="relative w-full h-1.5 group-hover:h-2 bg-slate-800 rounded-full overflow-hidden transition-all">
+                  <div
+                    className="h-full bg-gradient-to-r from-indigo-500 via-indigo-400 to-sky-400 rounded-full"
+                    style={{
+                      width: `${progressPercent}%`,
+                    }}
+                  />
+                </div>
+                {/* Scrubber thumb circle */}
                 <div
-                  className="h-full bg-gradient-to-r from-indigo-500 to-sky-400 rounded-full"
+                  className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow-md border-2 border-indigo-600 transition-transform pointer-events-none group-hover:scale-125"
                   style={{
-                    width: `${duration ? (currentTime / duration) * 100 : 0}%`,
+                    left: `calc(${progressPercent}% - 7px)`,
                   }}
                 />
               </div>
 
               <div className="flex items-center justify-between text-xs text-slate-200">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 sm:gap-3">
                   <button
                     onClick={togglePlayPause}
-                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-100 cursor-pointer"
+                    className="p-1.5 sm:p-2 rounded-xl hover:bg-slate-800 text-slate-100 cursor-pointer transition-colors"
+                    title={isPlaying ? "Pause" : "Play"}
                   >
                     {isPlaying ? (
                       <Pause className="w-4 h-4" />
                     ) : (
-                      <Play className="w-4 h-4" />
+                      <Play className="w-4 h-4 fill-current" />
                     )}
                   </button>
 
                   <button
-                    onClick={() => {
-                      setIsMuted((prev) => !prev);
-                      if (videoRef.current)
-                        videoRef.current.muted = !isMuted;
-                    }}
-                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-300 cursor-pointer"
+                    onClick={handleSkipBack}
+                    className="hidden xs:flex p-1.5 sm:p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer transition-colors"
+                    title="Rewind 10s"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    onClick={handleSkipForward}
+                    className="hidden xs:flex p-1.5 sm:p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer transition-colors"
+                    title="Forward 10s"
+                  >
+                    <RotateCw className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    onClick={toggleMute}
+                    className="p-1.5 sm:p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer transition-colors"
+                    title={isMuted ? "Unmute" : "Mute"}
                   >
                     {isMuted ? (
                       <VolumeX className="w-4 h-4 text-rose-400" />
@@ -1376,24 +1537,45 @@ const MediaSlotItem: React.FC<MediaSlotItemProps> = ({
                     )}
                   </button>
 
-                  <span className="font-mono text-[11px] text-slate-300">
+                  <span className="font-mono text-[11px] text-slate-300 ml-1">
                     {formatTime(currentTime)} / {formatTime(duration)}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Loop Toggle */}
                   <button
-                    onClick={() => {
-                      const rates = [1, 1.25, 1.5, 2];
-                      const nextRate =
-                        rates[(rates.indexOf(playbackRate) + 1) % rates.length];
-                      setPlaybackRate(nextRate);
-                      if (videoRef.current)
-                        videoRef.current.playbackRate = nextRate;
-                    }}
-                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-indigo-300 cursor-pointer"
+                    onClick={toggleLoop}
+                    className={`p-1.5 sm:p-2 rounded-xl border transition-all cursor-pointer ${
+                      isLooping
+                        ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+                        : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800"
+                    }`}
+                    title={isLooping ? "Looping enabled" : "Looping disabled"}
+                  >
+                    <Repeat className="w-3.5 h-3.5" />
+                  </button>
+
+                  {/* Playback speed switcher */}
+                  <button
+                    onClick={cyclePlaybackRate}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-bold text-indigo-300 cursor-pointer transition-all hover:scale-105 active:scale-95"
+                    title="Change speed"
                   >
                     {playbackRate}x
+                  </button>
+
+                  {/* Fullscreen Toggle */}
+                  <button
+                    onClick={handleToggleFullscreen}
+                    className="p-1.5 sm:p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer transition-colors"
+                    title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                  >
+                    {isFullscreen ? (
+                      <Minimize2 className="w-3.5 h-3.5" />
+                    ) : (
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    )}
                   </button>
                 </div>
               </div>

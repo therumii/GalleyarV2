@@ -56,6 +56,33 @@ export interface PhotoDrawingPath {
   points: { x: number; y: number }[];
 }
 
+export type TextFillType = "solid" | "gradient";
+
+export interface GradientColorStop {
+  color: string;
+  offset: number; // 0 to 1
+}
+
+export interface TextGradientConfig {
+  enabled?: boolean;
+  colors: string[]; // e.g. ["#f97316", "#db2777"]
+  stops?: GradientColorStop[]; // optional custom stops
+  angle: number; // 0 to 360 degrees
+  presetId?: string; // e.g. "sunset", "ocean", "aurora", "fire", "pastel", "monochrome", "neon", "berry", "gold"
+}
+
+export type TextBlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-dodge"
+  | "soft-light"
+  | "difference"
+  | "luminosity";
+
 export interface TextOverlay {
   id: string;
   text: string;
@@ -63,24 +90,52 @@ export interface TextOverlay {
   yNormalized: number; // 0..1 relative to container height
   scale: number;
   rotation: number; // degrees
-  fontFamily: "sans" | "serif" | "display" | "script" | "mono";
+  fontFamily: string; // "sans" | "serif" | "display" | "script" | "mono" | "modern" | "bold" | "handwritten" | "elegant" | "rounded"
   fontSizeRelative?: number;
   color: string;
+  fillType?: TextFillType; // "solid" | "gradient"
+  gradient?: TextGradientConfig;
+  blendMode?: TextBlendMode; // "normal" | "multiply" | "screen" | "overlay", etc.
   opacity: number;
   alignment: "left" | "center" | "right";
   style: "normal" | "outline" | "shadow" | "background";
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  letterSpacing?: number; // em spacing
+  lineSpacing?: number;   // line height multiplier
   bgColor?: string;
+  bgStyle?: "none" | "solid" | "rounded" | "pill";
+  bgPadding?: number;
+  stroke?: boolean;
+  strokeColor?: string;
+  strokeWidth?: number;
+  shadow?: boolean;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+  zIndex?: number;
   startTime?: number; // for video text timing in seconds
   endTime?: number;   // for video text timing in seconds
 }
 
 export interface StickerOverlay {
   id: string;
-  sticker: string; // Emoji, badge, or icon symbol
+  sticker: string; // Identifier or raw svg/emoji
+  name?: string;
+  svgContent?: string; // High-res vector SVG string
+  imageUrl?: string; // Image URL for gallery-uploaded sticker or transparent PNG/WebP
   xNormalized: number;
   yNormalized: number;
   scale: number;
   rotation: number;
+  opacity?: number;
+  blendMode?: TextBlendMode;
+  flipH?: boolean;
+  flipV?: boolean;
+  zIndex?: number;
   startTime?: number; // for video timing
   endTime?: number;   // for video timing
 }

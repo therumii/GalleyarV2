@@ -1,9 +1,9 @@
 import React from "react";
 import { motion } from "motion/react";
-import { Sun, Crop, Palette, Type, Smile } from "lucide-react";
+import { Sun, Crop, Palette, Type, Smile, Wand2 } from "lucide-react";
 import { haptics } from "../utils/haptics";
 
-export type EditorTool = "none" | "adjust" | "crop" | "filter" | "text" | "stickers";
+export type EditorTool = "none" | "adjust" | "eraser" | "crop" | "filter" | "text" | "stickers";
 
 interface EditingToolDockProps {
   activeTool: EditorTool | null;
@@ -17,15 +17,16 @@ export const EditingToolDock: React.FC<EditingToolDockProps> = ({
   // If activeTool is null (tools closed), do not render the dock
   if (activeTool === null) return null;
 
-  // When activeTool is "none", display the primary 5-button editing tool dock
+  // When activeTool is "none", display the primary editing tool dock
   if (activeTool !== "none") return null;
 
   const tools: { id: EditorTool; label: string; icon: React.ElementType; aria: string }[] = [
     { id: "adjust", label: "Adjust", icon: Sun, aria: "Adjust brightness, contrast, exposure and tone" },
+    { id: "eraser", label: "Eraser", icon: Wand2, aria: "AI object removal and inpainting eraser" },
     { id: "crop", label: "Crop", icon: Crop, aria: "Crop, rotate and transform aspect ratio" },
     { id: "filter", label: "Filter", icon: Palette, aria: "Choose color filters and styles" },
     { id: "text", label: "Text", icon: Type, aria: "Add text overlays and typography" },
-    { id: "stickers", label: "Stickers", icon: Smile, aria: "Add fun stickers and badges" },
+    { id: "stickers", label: "Stickers", icon: Smile, aria: "Add rich graphics, stickers and badges" },
   ];
 
   return (

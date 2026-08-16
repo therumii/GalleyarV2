@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="50%" fx="30%" fy="30%">
+      <stop offset="0%" stop-color="#11131a" />
+      <stop offset="70%" stop-color="#07080c" />
+      <stop offset="100%" stop-color="#020305" />
+    </radialGradient>
+
+    <!-- 'G' Gradient (Cyan to Deep Royal Blue) -->
+    <linearGradient id="gGrad" x1="15%" y1="10%" x2="85%" y2="90%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="25%" stop-color="#0ea5e9" />
+      <stop offset="55%" stop-color="#2563eb" />
+      <stop offset="85%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+
+    <!-- Mountain Foreground Gradient -->
+    <linearGradient id="mountFrontGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0369a1" />
+    </linearGradient>
+
+    <!-- Mountain Background Gradient -->
+    <linearGradient id="mountBackGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#172554" />
+    </linearGradient>
+
+    <!-- 'Y' Light Gradient -->
+    <linearGradient id="yGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="65%" stop-color="#f1f5f9" />
+      <stop offset="100%" stop-color="#93c5fd" />
+    </linearGradient>
+
+    <!-- Shadow filters -->
+    <filter id="shadowY" x="-20%" y="-20%" width="150%" height="150%">
+      <feDropShadow dx="-4" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.75" />
+    </filter>
+    <filter id="moonGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="innerDepth" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.8" />
+    </filter>
+  </defs>
+
+  <!-- Outer Circular Disc -->
+  <circle cx="256" cy="256" r="248" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="4" />
+  
+  <!-- Subtle Inner Border Glow -->
+  <circle cx="256" cy="256" r="246" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.08" />
+
+  <!-- Inner Dark Cavity Behind Mountains & Moon -->
+  <circle cx="256" cy="256" r="170" fill="#04060b" />
+
+  <!-- Moon / Dot in Sky -->
+  <circle cx="205" cy="246" r="20" fill="#cffafe" filter="url(#moonGlow)" />
+
+  <!-- Background Mountain Silhouette -->
+  <polygon points="135,340 195,282 270,355 135,355" fill="url(#mountBackGrad)" opacity="0.9" />
+
+  <!-- Foreground Main Mountain Peak -->
+  <polygon points="175,355 242,268 315,355 175,355" fill="url(#mountFrontGrad)" />
+
+  <!-- Stylized Circular 'G' Ring -->
+  <!-- Arc path forming the bold 'G' with rounded outer geometry and inner cutout -->
+  <path
+    d="M 360,165
+       C 330,118 280,95 220,102
+       C 145,110 90,172 90,256
+       C 90,345 152,415 240,418
+       C 305,420 358,380 385,325
+       L 338,300
+       C 320,340 282,366 238,364
+       C 178,362 142,312 142,256
+       C 142,198 178,154 230,150
+       C 272,146 308,168 328,202
+       Z"
+    fill="url(#gGrad)"
+    filter="url(#innerDepth)"
+  />
+
+  <!-- Stylized Modern 'Y' Glyph overlapping the lower right -->
+  <!-- Formed with geometric arms and stem with dynamic angled cutouts -->
+  <g filter="url(#shadowY)">
+    <path
+      d="M 254,220
+         L 336,220
+         L 378,296
+         L 435,220
+         L 472,220
+         L 398,322
+         L 398,400
+         L 378,418
+         L 358,400
+         L 358,322
+         L 282,260
+         L 254,220
+         Z"
+      fill="url(#yGrad)"
+    />
+  </g>
+</svg>

@@ -30,6 +30,24 @@ import { Photo, PhotoEditState, TextOverlay, StickerOverlay } from "../types";
 import { haptics } from "../utils/haptics";
 import { getEditedMediaTitle } from "../utils/mediaTitle";
 import { EditingToolDock, EditorTool } from "./EditingToolDock";
+import { TextCanvasLayer } from "./photoEditor/TextCanvasLayer";
+import { TextEditorBottomBar } from "./photoEditor/TextEditorBottomBar";
+import { InlineTextEditModal } from "./photoEditor/InlineTextEditModal";
+import { StickerCanvasLayer } from "./photoEditor/StickerCanvasLayer";
+import { StickerEditorBottomBar } from "./photoEditor/StickerEditorBottomBar";
+import { EraserCanvasOverlay } from "./photoEditor/EraserCanvasOverlay";
+import { EraserControls } from "./photoEditor/EraserControls";
+import {
+  performIntelligentInpainting,
+  renderMaskToCanvas,
+  createMaskCanvas,
+  EraserStroke,
+} from "../utils/inpaintingEngine";
+import {
+  StickerGraphic,
+  getStickerSvgDataUrl,
+} from "../utils/stickerLibrary";
+import { getFontOption, getCanvasCompositeOperation } from "../utils/textFonts";
 
 interface PhotoEditorModalProps {
   photo: Photo;
@@ -85,6 +103,8 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
     photo.editedState?.textOverlays || []
   );
   const [activeTextId, setActiveTextId] = useState<string | null>(null);
+  const [isEditingInlineText, setIsEditingInlineText] = useState(false);
+  const [snapGuide, setSnapGuide] = useState<{ x?: number; y?: number } | null>(null);
 
   // Sticker Overlays State
   const [stickerOverlays, setStickerOverlays] = useState<StickerOverlay[]>(
@@ -92,80 +112,192 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
   );
   const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
 
-  // Sticker Overlay Drag Ref
-  const stickerDragRef = useRef<{
-    isDragging: boolean;
-    stickerId: string | null;
-    startX: number;
-    startY: number;
-    initialX: number;
-    initialY: number;
-  }>({
-    isDragging: false,
-    stickerId: null,
-    startX: 0,
-    startY: 0,
-    initialX: 0.5,
-    initialY: 0.5,
-  });
+  // Eraser / Inpainting State
+  const [eraserStrokes, setEraserStrokes] = useState<EraserStroke[]>([]);
+  const [eraserMode, setEraserMode] = useState<"remove" | "restore">("remove");
+  const [eraserBrushSize, setEraserBrushSize] = useState<number>(35);
+  const [eraserBrushSoftness, setEraserBrushSoftness] = useState<number>(0.2);
+  const [isErasingWithAI, setIsErasingWithAI] = useState<boolean>(false);
+  const [eraseSuccessMsg, setEraseSuccessMsg] = useState<boolean>(false);
 
-  // Sticker Pointer Handlers
-  const handleStickerPointerDown = (
-    e: React.PointerEvent,
-    stickerItem: StickerOverlay
-  ) => {
-    e.stopPropagation();
-    setActiveStickerId(stickerItem.id);
-    if (activeTool !== "stickers") setActiveTool("stickers");
-
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {}
-
-    stickerDragRef.current = {
-      isDragging: true,
-      stickerId: stickerItem.id,
-      startX: e.clientX,
-      startY: e.clientY,
-      initialX: stickerItem.xNormalized,
-      initialY: stickerItem.yNormalized,
+  // Sticker Action Handlers
+  const handleAddStickerGraphic = (graphic: StickerGraphic) => {
+    const newSticker: StickerOverlay = {
+      id: `sticker-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      sticker: graphic.id,
+      name: graphic.name,
+      svgContent: graphic.svgContent,
+      xNormalized: 0.5,
+      yNormalized: 0.5,
+      scale: 1,
+      rotation: 0,
+      opacity: 1,
+      blendMode: "normal",
+      flipH: false,
+      flipV: false,
+      zIndex: 30 + stickerOverlays.length,
     };
+    setStickerOverlays((prev) => [...prev, newSticker]);
+    setActiveStickerId(newSticker.id);
   };
 
-  const handleStickerPointerMove = (e: React.PointerEvent, stickerId: string) => {
-    if (
-      !stickerDragRef.current.isDragging ||
-      stickerDragRef.current.stickerId !== stickerId ||
-      !imageContainerRef.current
-    )
-      return;
+  const handleAddGallerySticker = (imageUrl: string, name: string) => {
+    const newSticker: StickerOverlay = {
+      id: `sticker-gal-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      sticker: "custom-gallery",
+      name: name || "Custom Sticker",
+      imageUrl,
+      xNormalized: 0.5,
+      yNormalized: 0.5,
+      scale: 1,
+      rotation: 0,
+      opacity: 1,
+      blendMode: "normal",
+      flipH: false,
+      flipV: false,
+      zIndex: 30 + stickerOverlays.length,
+    };
+    setStickerOverlays((prev) => [...prev, newSticker]);
+    setActiveStickerId(newSticker.id);
+  };
 
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-
-    const dx = (e.clientX - stickerDragRef.current.startX) / rect.width;
-    const dy = (e.clientY - stickerDragRef.current.startY) / rect.height;
-
-    const newX = Math.max(0.05, Math.min(0.95, stickerDragRef.current.initialX + dx));
-    const newY = Math.max(0.05, Math.min(0.95, stickerDragRef.current.initialY + dy));
-
+  const handleUpdateStickerLayer = (id: string, partial: Partial<StickerOverlay>) => {
     setStickerOverlays((prev) =>
-      prev.map((item) =>
-        item.id === stickerId
-          ? { ...item, xNormalized: newX, yNormalized: newY }
-          : item
-      )
+      prev.map((s) => (s.id === id ? { ...s, ...partial } : s))
     );
   };
 
-  const handleStickerPointerUp = (e: React.PointerEvent) => {
-    if (stickerDragRef.current.isDragging) {
-      stickerDragRef.current.isDragging = false;
-      stickerDragRef.current.stickerId = null;
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {}
+  const handleDeleteStickerLayer = (id: string) => {
+    setStickerOverlays((prev) => prev.filter((s) => s.id !== id));
+    if (activeStickerId === id) {
+      setActiveStickerId(null);
     }
+  };
+
+  const handleDuplicateStickerLayer = (id: string) => {
+    const source = stickerOverlays.find((s) => s.id === id);
+    if (!source) return;
+    const clone: StickerOverlay = {
+      ...source,
+      id: `sticker-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      xNormalized: Math.min(0.9, source.xNormalized + 0.05),
+      yNormalized: Math.min(0.9, source.yNormalized + 0.05),
+      zIndex: 30 + stickerOverlays.length + 1,
+    };
+    setStickerOverlays((prev) => [...prev, clone]);
+    setActiveStickerId(clone.id);
+  };
+
+  const handleBringStickerForward = (id?: string) => {
+    const targetId = id || activeStickerId;
+    if (!targetId) return;
+    setStickerOverlays((prev) =>
+      prev.map((s) => (s.id === targetId ? { ...s, zIndex: (s.zIndex || 30) + 1 } : s))
+    );
+  };
+
+  const handleSendStickerBackward = (id?: string) => {
+    const targetId = id || activeStickerId;
+    if (!targetId) return;
+    setStickerOverlays((prev) =>
+      prev.map((s) => (s.id === targetId ? { ...s, zIndex: Math.max(1, (s.zIndex || 30) - 1) } : s))
+    );
+  };
+
+  const handleBringStickerToFront = () => {
+    if (!activeStickerId) return;
+    const maxZ = Math.max(30, ...stickerOverlays.map((s) => s.zIndex || 30));
+    setStickerOverlays((prev) =>
+      prev.map((s) => (s.id === activeStickerId ? { ...s, zIndex: maxZ + 2 } : s))
+    );
+  };
+
+  const handleSendStickerToBack = () => {
+    if (!activeStickerId) return;
+    const minZ = Math.min(30, ...stickerOverlays.map((s) => s.zIndex || 30));
+    setStickerOverlays((prev) =>
+      prev.map((s) => (s.id === activeStickerId ? { ...s, zIndex: Math.max(1, minZ - 2) } : s))
+    );
+  };
+
+  // Text Action Handlers
+  const handleAddText = () => {
+    const newText: TextOverlay = {
+      id: `text-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      text: "Tap to edit",
+      xNormalized: 0.5,
+      yNormalized: 0.5,
+      scale: 1,
+      rotation: 0,
+      fontSizeRelative: 28,
+      fontFamily: "sans",
+      color: "#ffffff",
+      opacity: 1,
+      blendMode: "normal",
+      alignment: "center",
+      bold: false,
+      italic: false,
+      underline: false,
+      strikethrough: false,
+      shadow: true,
+      shadowColor: "rgba(0, 0, 0, 0.75)",
+      shadowBlur: 8,
+      shadowOffsetX: 2,
+      shadowOffsetY: 2,
+      stroke: false,
+      strokeColor: "#000000",
+      strokeWidth: 2,
+      style: "normal",
+      bgStyle: "none",
+      bgColor: "rgba(0, 0, 0, 0.75)",
+      bgPadding: 12,
+      fillType: "solid",
+      zIndex: 40 + textOverlays.length,
+    };
+    setTextOverlays((prev) => [...prev, newText]);
+    setActiveTextId(newText.id);
+    setIsEditingInlineText(true);
+  };
+
+  const handleUpdateTextLayer = (id: string, partial: Partial<TextOverlay>) => {
+    setTextOverlays((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, ...partial } : t))
+    );
+  };
+
+  const handleDeleteTextLayer = (id: string) => {
+    setTextOverlays((prev) => prev.filter((t) => t.id !== id));
+    if (activeTextId === id) setActiveTextId(null);
+  };
+
+  const handleDuplicateTextLayer = (id: string) => {
+    const target = textOverlays.find((t) => t.id === id);
+    if (!target) return;
+    const duplicated: TextOverlay = {
+      ...target,
+      id: `text-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      xNormalized: Math.min(0.85, target.xNormalized + 0.05),
+      yNormalized: Math.min(0.85, target.yNormalized + 0.05),
+      zIndex: (target.zIndex || 40) + 1,
+    };
+    setTextOverlays((prev) => [...prev, duplicated]);
+    setActiveTextId(duplicated.id);
+  };
+
+  const handleStartInlineEdit = (id: string) => {
+    setActiveTextId(id);
+    setIsEditingInlineText(true);
+  };
+
+  const handleCommitInlineText = (newText: string) => {
+    if (activeTextId) {
+      handleUpdateTextLayer(activeTextId, { text: newText });
+    }
+    setIsEditingInlineText(false);
+  };
+
+  const handleCancelInlineText = () => {
+    setIsEditingInlineText(false);
   };
 
   // Compute unsaved changes status
@@ -195,35 +327,36 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
 
   useImperativeHandle(ref, () => ({
     handleBack: () => {
+      // 1. If inline text editing modal is open, commit/dismiss it
+      if (isEditingInlineText) {
+        setIsEditingInlineText(false);
+        return true;
+      }
+      // 2. If discard confirm modal is open, close it
       if (showDiscardConfirmModal) {
         setShowDiscardConfirmModal(false);
         return true;
       }
+      // 3. If save options dialog is open, close it
       if (showSaveOptions) {
         setShowSaveOptions(false);
         return true;
       }
+      // 4. If a text layer is selected, deselect it
+      if (activeTool === "text" && activeTextId) {
+        setActiveTextId(null);
+        return true;
+      }
+      // 5. If a tool sub-panel is open, return to main tools dock
+      if (activeTool !== null && activeTool !== "none") {
+        setActiveTool("none");
+        return true;
+      }
+      // 6. Confirm exit from editor
       setShowDiscardConfirmModal(true);
       return true;
     },
   }));
-
-  // Text Overlay Drag Ref
-  const textDragRef = useRef<{
-    isDragging: boolean;
-    overlayId: string | null;
-    startX: number;
-    startY: number;
-    initialX: number;
-    initialY: number;
-  }>({
-    isDragging: false,
-    overlayId: null,
-    startX: 0,
-    startY: 0,
-    initialX: 0.5,
-    initialY: 0.5,
-  });
 
   // Interactive Crop state (% based)
   const [cropBox, setCropBox] = useState<{
@@ -256,15 +389,6 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
 
   const selectedCropRatioRef = useRef(selectedCropRatio);
   selectedCropRatioRef.current = selectedCropRatio;
-
-  // AI Eraser state
-  const [eraserBrushSize, setEraserBrushSize] = useState<number>(35);
-  const [eraserPoints, setEraserPoints] = useState<
-    { x: number; y: number; size: number }[]
-  >([]);
-  const [isMouseDown, setIsMouseDown] = useState(false);
-  const [isErasingWithAI, setIsErasingWithAI] = useState(false);
-  const [eraseSuccessMsg, setEraseSuccessMsg] = useState(false);
 
   const imageContainerRef = useRef<HTMLDivElement | null>(null);
   const imageElementRef = useRef<HTMLImageElement | null>(null);
@@ -592,65 +716,6 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
     }
   };
 
-  // Text Overlay Drag Handlers
-  const handleTextPointerDown = (
-    e: React.PointerEvent,
-    overlay: TextOverlay
-  ) => {
-    e.stopPropagation();
-    setActiveTextId(overlay.id);
-    if (activeTool !== "text") setActiveTool("text");
-
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {}
-
-    textDragRef.current = {
-      isDragging: true,
-      overlayId: overlay.id,
-      startX: e.clientX,
-      startY: e.clientY,
-      initialX: overlay.xNormalized,
-      initialY: overlay.yNormalized,
-    };
-  };
-
-  const handleTextPointerMove = (e: React.PointerEvent, overlayId: string) => {
-    if (
-      !textDragRef.current.isDragging ||
-      textDragRef.current.overlayId !== overlayId ||
-      !imageContainerRef.current
-    )
-      return;
-
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-
-    const dx = (e.clientX - textDragRef.current.startX) / rect.width;
-    const dy = (e.clientY - textDragRef.current.startY) / rect.height;
-
-    const newX = Math.max(0.05, Math.min(0.95, textDragRef.current.initialX + dx));
-    const newY = Math.max(0.05, Math.min(0.95, textDragRef.current.initialY + dy));
-
-    setTextOverlays((prev) =>
-      prev.map((item) =>
-        item.id === overlayId
-          ? { ...item, xNormalized: newX, yNormalized: newY }
-          : item
-      )
-    );
-  };
-
-  const handleTextPointerUp = (e: React.PointerEvent) => {
-    if (textDragRef.current.isDragging) {
-      textDragRef.current.isDragging = false;
-      textDragRef.current.overlayId = null;
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {}
-    }
-  };
-
   // Execute actual Crop on Canvas
   const performCanvasCrop = () => {
     setIsApplyingCrop(true);
@@ -705,126 +770,41 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
     };
   };
 
-  // AI Eraser Brush Handler
-  const addBrushPoint = (clientX: number, clientY: number) => {
-    if (!imageContainerRef.current) return;
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100));
-    const y = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100));
-    setEraserPoints((prev) => [...prev, { x, y, size: eraserBrushSize }]);
-  };
-
-  const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeTool !== "adjust" || selectedAdjustment !== "eraser") return;
-    setIsMouseDown(true);
-    addBrushPoint(e.clientX, e.clientY);
-  };
-
-  const handleStagePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeTool !== "adjust" || selectedAdjustment !== "eraser" || !isMouseDown) return;
-    addBrushPoint(e.clientX, e.clientY);
-  };
-
-  const handleStagePointerUp = () => {
-    setIsMouseDown(false);
-  };
-
-  // Content-Aware AI Inpainting
-  const performAIErase = (pointsToErase = eraserPoints) => {
-    if (pointsToErase.length === 0) return;
+  // Content-Aware Intelligent Patch Inpainting Engine
+  const handleApplyIntelligentErase = async () => {
+    if (eraserStrokes.length === 0 || isErasingWithAI) return;
     setIsErasingWithAI(true);
 
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = currentPhotoUrl;
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = currentPhotoUrl;
 
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth || 800;
-      canvas.height = img.naturalHeight || 600;
-      const ctx = canvas.getContext("2d");
-
-      if (!ctx) {
-        setIsErasingWithAI(false);
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      const width = canvas.width;
-      const height = canvas.height;
-
-      pointsToErase.forEach((pt) => {
-        const cx = Math.round((pt.x / 100) * width);
-        const cy = Math.round((pt.y / 100) * height);
-        const radius = Math.max(12, Math.round((pt.size / 300) * Math.min(width, height)));
-
-        const sampleRingRadius = Math.round(radius * 1.3);
-        let sumR = 0, sumG = 0, sumB = 0, sampleCount = 0;
-
-        for (let angle = 0; angle < Math.PI * 2; angle += 0.2) {
-          const sx = Math.round(cx + Math.cos(angle) * sampleRingRadius);
-          const sy = Math.round(cy + Math.sin(angle) * sampleRingRadius);
-
-          if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
-            const idx = (sy * width + sx) * 4;
-            sumR += data[idx];
-            sumG += data[idx + 1];
-            sumB += data[idx + 2];
-            sampleCount++;
-          }
-        }
-
-        if (sampleCount === 0) return;
-
-        const avgR = sumR / sampleCount;
-        const avgG = sumG / sampleCount;
-        const avgB = sumB / sampleCount;
-
-        for (let dy = -radius; dy <= radius; dy++) {
-          for (let dx = -radius; dx <= radius; dx++) {
-            const distSq = dx * dx + dy * dy;
-            if (distSq <= radius * radius) {
-              const px = cx + dx;
-              const py = cy + dy;
-
-              if (px >= 0 && px < width && py >= 0 && py < height) {
-                const pixelIdx = (py * width + px) * 4;
-                const distRatio = Math.sqrt(distSq) / radius;
-                const noise = (Math.random() - 0.5) * 8;
-
-                const currentR = data[pixelIdx];
-                const currentG = data[pixelIdx + 1];
-                const currentB = data[pixelIdx + 2];
-
-                const blendWeight = Math.pow(1 - distRatio, 1.5);
-
-                data[pixelIdx] = Math.min(255, Math.max(0, currentR * (1 - blendWeight) + (avgR + noise) * blendWeight));
-                data[pixelIdx + 1] = Math.min(255, Math.max(0, currentG * (1 - blendWeight) + (avgG + noise) * blendWeight));
-                data[pixelIdx + 2] = Math.min(255, Math.max(0, currentB * (1 - blendWeight) + (avgB + noise) * blendWeight));
-              }
-            }
-          }
-        }
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Failed to load photo for inpainting"));
       });
 
-      ctx.putImageData(imageData, 0, 0);
+      const width = img.naturalWidth || 1000;
+      const height = img.naturalHeight || 800;
+
+      // Render the strokes into an accurate binary mask canvas
+      const maskCanvas = createMaskCanvas(width, height, eraserStrokes);
+
+      // Perform intelligent patch synthesis inpainting
+      const inpaintedDataUrl = await performIntelligentInpainting(img, maskCanvas);
 
       setUrlHistory((prev) => [...prev, currentPhotoUrl]);
-      const newUrl = canvas.toDataURL("image/jpeg", 0.95);
-      setCurrentPhotoUrl(newUrl);
-      setEraserPoints([]);
-      setIsErasingWithAI(false);
-
+      setCurrentPhotoUrl(inpaintedDataUrl);
+      setEraserStrokes([]);
       setEraseSuccessMsg(true);
       setTimeout(() => setEraseSuccessMsg(false), 2500);
-    };
-
-    img.onerror = () => {
+      haptics.notification("success");
+    } catch (err) {
+      console.error("Intelligent inpainting error:", err);
+    } finally {
       setIsErasingWithAI(false);
-    };
+    }
   };
 
   const handleUndo = () => {
@@ -834,13 +814,18 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
     setCurrentPhotoUrl(previousUrl);
   };
 
-  // Final Save: Bake all filters, adjustments, and rotation permanently into high-res Canvas
-  const handleSave = (isCopy = false) => {
+  // Final Save: Bake all filters, adjustments, rotation, stickers, and text layers permanently into high-res Canvas
+  const handleSave = async (isCopy = false) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.src = currentPhotoUrl;
 
-    img.onload = () => {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Failed to load current photo"));
+      });
+
       const canvas = document.createElement("canvas");
       const isRotated90 = rotation % 180 !== 0;
 
@@ -885,6 +870,64 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
 
+      // Render sticker overlays onto high-res Canvas (sorted by zIndex)
+      const sortedStickers = [...stickerOverlays].sort(
+        (a, b) => (a.zIndex || 30) - (b.zIndex || 30)
+      );
+
+      const loadedStickerAssets = await Promise.all(
+        sortedStickers.map(async (overlay) => {
+          let srcUrl = overlay.imageUrl;
+          if (!srcUrl && overlay.svgContent) {
+            srcUrl = getStickerSvgDataUrl(overlay.svgContent);
+          }
+
+          if (srcUrl) {
+            try {
+              const stickerImg = new Image();
+              stickerImg.crossOrigin = "anonymous";
+              stickerImg.src = srcUrl;
+              await new Promise<void>((res) => {
+                stickerImg.onload = () => res();
+                stickerImg.onerror = () => res();
+              });
+              return { overlay, img: stickerImg, isEmoji: false };
+            } catch {
+              return { overlay, img: null, isEmoji: false };
+            }
+          }
+          return { overlay, img: null, isEmoji: Boolean(overlay.sticker) };
+        })
+      );
+
+      loadedStickerAssets.forEach(({ overlay, img: stImg, isEmoji }) => {
+        ctx.save();
+        const xPx = overlay.xNormalized * canvas.width;
+        const yPx = overlay.yNormalized * canvas.height;
+        ctx.translate(xPx, yPx);
+        ctx.rotate((overlay.rotation * Math.PI) / 180);
+        ctx.scale(overlay.flipH ? -1 : 1, overlay.flipV ? -1 : 1);
+
+        // Blend Mode & Opacity
+        ctx.globalCompositeOperation = getCanvasCompositeOperation(overlay.blendMode);
+        ctx.globalAlpha = overlay.opacity ?? 1;
+
+        const baseSize = canvas.width * 0.16 * (overlay.scale || 1);
+
+        if (stImg && stImg.naturalWidth) {
+          const aspect = stImg.naturalWidth / stImg.naturalHeight;
+          const drawW = baseSize;
+          const drawH = baseSize / aspect;
+          ctx.drawImage(stImg, -drawW / 2, -drawH / 2, drawW, drawH);
+        } else if (isEmoji && overlay.sticker) {
+          ctx.font = `${baseSize * 0.8}px 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(overlay.sticker, 0, 0);
+        }
+        ctx.restore();
+      });
+
       // Render text overlays onto high-res Canvas
       textOverlays.forEach((overlay) => {
         ctx.save();
@@ -893,46 +936,102 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
         ctx.translate(xPx, yPx);
         ctx.rotate((overlay.rotation * Math.PI) / 180);
 
-        const baseFontSize = (canvas.width * 0.05) * overlay.scale;
-        let fontStr = `${baseFontSize}px sans-serif`;
-        if (overlay.fontFamily === "serif") fontStr = `${baseFontSize}px Georgia, serif`;
-        else if (overlay.fontFamily === "mono") fontStr = `${baseFontSize}px monospace`;
-        else if (overlay.fontFamily === "display") fontStr = `bold ${baseFontSize * 1.15}px system-ui, sans-serif`;
-        else if (overlay.fontFamily === "script") fontStr = `italic ${baseFontSize}px Georgia, serif`;
-
-        ctx.font = fontStr;
-        ctx.textAlign = overlay.alignment || "center";
-        ctx.textBaseline = "middle";
+        // Blend Mode & Opacity
+        ctx.globalCompositeOperation = getCanvasCompositeOperation(overlay.blendMode);
         ctx.globalAlpha = overlay.opacity ?? 1;
 
-        if (overlay.style === "background") {
-          const metrics = ctx.measureText(overlay.text);
-          const pad = baseFontSize * 0.4;
+        // Compute high-res base font size
+        const baseFontSize = (canvas.width * 0.05) * (overlay.scale || 1);
+        const fontOpt = getFontOption(overlay.fontFamily);
+        const fontWeight = overlay.bold ? "800" : (fontOpt.id === "bold" ? "700" : "600");
+        const fontStyle = overlay.italic || fontOpt.id === "handwritten" ? "italic" : "normal";
+
+        ctx.font = `${fontStyle} ${fontWeight} ${baseFontSize}px ${fontOpt.canvasFontName}`;
+        ctx.textAlign = overlay.alignment || "center";
+        ctx.textBaseline = "middle";
+
+        const metrics = ctx.measureText(overlay.text);
+        const textWidth = metrics.width || baseFontSize * 3;
+        const textHeight = baseFontSize * 1.35;
+
+        const bgStyle = overlay.bgStyle || (overlay.style === "background" ? "rounded" : "none");
+        const hasBg = bgStyle !== "none" || overlay.style === "background";
+
+        if (hasBg) {
+          const pad = baseFontSize * 0.45;
+          const bgW = textWidth + pad * 2;
+          const bgH = textHeight + pad;
+          let bgX = -bgW / 2;
+          if (overlay.alignment === "left") bgX = -pad;
+          if (overlay.alignment === "right") bgX = -textWidth - pad;
+          const bgY = -bgH / 2;
+
           ctx.fillStyle = overlay.bgColor || "rgba(0,0,0,0.75)";
-          ctx.fillRect(-metrics.width / 2 - pad, -baseFontSize / 2 - pad / 2, metrics.width + pad * 2, baseFontSize + pad);
-        } else if (overlay.style === "shadow") {
-          ctx.shadowColor = "rgba(0,0,0,0.85)";
-          ctx.shadowBlur = baseFontSize * 0.25;
-          ctx.shadowOffsetX = baseFontSize * 0.08;
-          ctx.shadowOffsetY = baseFontSize * 0.08;
-        } else if (overlay.style === "outline") {
-          ctx.strokeStyle = "#000000";
-          ctx.lineWidth = baseFontSize * 0.12;
+          const radius = bgStyle === "pill" ? bgH / 2 : (bgStyle === "rounded" ? Math.min(16, bgH * 0.25) : 0);
+          if (radius > 0 && typeof (ctx as any).roundRect === "function") {
+            ctx.beginPath();
+            (ctx as any).roundRect(bgX, bgY, bgW, bgH, radius);
+            ctx.fill();
+          } else {
+            ctx.fillRect(bgX, bgY, bgW, bgH);
+          }
+        }
+
+        // Text Shadow
+        if (overlay.shadow || overlay.style === "shadow") {
+          ctx.shadowColor = overlay.shadowColor || "rgba(0,0,0,0.85)";
+          ctx.shadowBlur = (overlay.shadowBlur ?? 8) * (canvas.width / 800);
+          ctx.shadowOffsetX = (overlay.shadowOffsetX ?? 2) * (canvas.width / 800);
+          ctx.shadowOffsetY = (overlay.shadowOffsetY ?? 2) * (canvas.width / 800);
+        } else {
+          ctx.shadowColor = "transparent";
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+        }
+
+        // Stroke / Outline
+        if (overlay.stroke || overlay.style === "outline") {
+          ctx.strokeStyle = overlay.strokeColor || "#000000";
+          ctx.lineWidth = (overlay.strokeWidth ?? 2.5) * (canvas.width / 800);
           ctx.strokeText(overlay.text, 0, 0);
         }
 
-        ctx.fillStyle = overlay.color || "#ffffff";
+        // Fill Style (Solid Color vs Linear Gradient)
+        if (overlay.fillType === "gradient" && overlay.gradient && overlay.gradient.colors?.length > 1) {
+          const angleDeg = overlay.gradient.angle ?? 90;
+          const rad = ((angleDeg - 90) * Math.PI) / 180;
+          const halfW = textWidth / 2;
+          const halfH = textHeight / 2;
+          const diag = Math.sqrt(halfW * halfW + halfH * halfH);
+
+          const x0 = -Math.cos(rad) * diag;
+          const y0 = -Math.sin(rad) * diag;
+          const x1 = Math.cos(rad) * diag;
+          const y1 = Math.sin(rad) * diag;
+
+          const canvasGrad = ctx.createLinearGradient(x0, y0, x1, y1);
+          const colors = overlay.gradient.colors;
+          colors.forEach((col, idx) => {
+            const stop = idx / (colors.length - 1);
+            canvasGrad.addColorStop(stop, col);
+          });
+
+          ctx.fillStyle = canvasGrad;
+        } else {
+          ctx.fillStyle = overlay.color || "#ffffff";
+        }
+
         ctx.fillText(overlay.text, 0, 0);
         ctx.restore();
       });
 
       const finalBakedUrl = canvas.toDataURL("image/jpeg", 0.95);
       finishAndSavePhoto(finalBakedUrl, isCopy);
-    };
-
-    img.onerror = () => {
+    } catch (err) {
+      console.error("Save error:", err);
       finishAndSavePhoto(currentPhotoUrl, isCopy);
-    };
+    }
   };
 
   const finishAndSavePhoto = (finalUrl: string, isCopy = false) => {
@@ -975,7 +1074,7 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
     setFilter("none");
     setRotation(0);
     setFlipH(false);
-    setEraserPoints([]);
+    setEraserStrokes([]);
     setTextOverlays([]);
     setStickerOverlays([]);
 
@@ -1044,7 +1143,7 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
               setFilter("none");
               setRotation(0);
               setFlipH(false);
-              setEraserPoints([]);
+              setEraserStrokes([]);
               setCurrentPhotoUrl(photo.highResUrl || photo.url);
               setUrlHistory([]);
               setCropBox({ x: 10, y: 10, width: 80, height: 80 });
@@ -1105,13 +1204,13 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
       {/* Main Preview Stage */}
       <div className="flex-1 relative bg-black flex items-center justify-center p-4 sm:p-6 overflow-hidden">
         {/* Instruction Badge when AI Eraser active */}
-        {activeTool === "adjust" && selectedAdjustment === "eraser" && (
+        {(activeTool === "eraser" || (activeTool === "adjust" && selectedAdjustment === "eraser")) && (
           <div className="absolute top-4 z-20 px-4 py-2 rounded-2xl bg-slate-900/90 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-2 shadow-xl backdrop-blur-md animate-fade-in">
             <Wand2 className="w-4 h-4 text-amber-400 animate-spin-slow" />
             <span>
-              {eraserPoints.length > 0
-                ? `${eraserPoints.length} spots masked. Tap "Erase Selected" below.`
-                : "Brush on any object in the photo to erase it."}
+              {eraserStrokes.length > 0
+                ? `${eraserStrokes.length} stroke(s) painted. Tap "Erase Selection" to remove.`
+                : "Paint over any object or blemish to remove it."}
             </span>
           </div>
         )}
@@ -1148,9 +1247,10 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
 
         <div
           ref={imageContainerRef}
-          onPointerDown={handleStagePointerDown}
-          onPointerMove={handleStagePointerMove}
-          onPointerUp={handleStagePointerUp}
+          onClick={() => {
+            if (activeTextId) setActiveTextId(null);
+            if (activeStickerId) setActiveStickerId(null);
+          }}
           className={`relative max-h-full max-w-full transition-transform duration-300 flex items-center justify-center ${
             activeTool === "adjust" && selectedAdjustment === "eraser" ? "cursor-crosshair" : ""
           }`}
@@ -1302,220 +1402,77 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
             </div>
           )}
 
-          {/* AI Object Eraser Brushed Mask Spots */}
-          {activeTool === "adjust" && selectedAdjustment === "eraser" &&
-            eraserPoints.map((pt, idx) => (
-              <div
-                key={idx}
-                style={{
-                  left: `${pt.x}%`,
-                  top: `${pt.y}%`,
-                  width: `${pt.size}px`,
-                  height: `${pt.size}px`,
-                }}
-                className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-pink-500/60 backdrop-blur-[1px] border border-pink-400 pointer-events-none shadow-[0_0_12px_rgba(236,72,153,0.8)] animate-pulse"
-              />
-            ))}
+          {/* Snap Alignment Guides */}
+          {snapGuide && activeTool === "text" && (
+            <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+              {snapGuide.x !== undefined && (
+                <div
+                  className="absolute top-0 bottom-0 border-l border-dashed border-indigo-400 shadow-[0_0_8px_rgba(99,102,241,0.8)]"
+                  style={{ left: `${snapGuide.x}%` }}
+                />
+              )}
+              {snapGuide.y !== undefined && (
+                <div
+                  className="absolute left-0 right-0 border-t border-dashed border-indigo-400 shadow-[0_0_8px_rgba(99,102,241,0.8)]"
+                  style={{ top: `${snapGuide.y}%` }}
+                />
+              )}
+            </div>
+          )}
 
           {/* Interactive Text Overlays on Stage */}
-          {textOverlays.map((overlay) => {
-            const isSelected = activeTextId === overlay.id;
-            let fontClass = "font-sans";
-            if (overlay.fontFamily === "serif") fontClass = "font-serif";
-            else if (overlay.fontFamily === "mono") fontClass = "font-mono";
-            else if (overlay.fontFamily === "display") fontClass = "font-black tracking-wide uppercase";
-            else if (overlay.fontFamily === "script") fontClass = "font-serif italic";
+          {textOverlays.map((overlay) => (
+            <TextCanvasLayer
+              key={overlay.id}
+              overlay={overlay}
+              isSelected={activeTextId === overlay.id}
+              isEditingInline={isEditingInlineText && activeTextId === overlay.id}
+              containerRef={imageContainerRef}
+              onSelect={(id) => {
+                setActiveTextId(id);
+                if (activeTool !== "text") setActiveTool("text");
+              }}
+              onUpdate={handleUpdateTextLayer}
+              onDelete={handleDeleteTextLayer}
+              onDuplicate={handleDuplicateTextLayer}
+              onStartInlineEdit={handleStartInlineEdit}
+              onSnapChange={setSnapGuide}
+            />
+          ))}
 
-            return (
-              <div
-                key={overlay.id}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveTextId(overlay.id);
-                  if (activeTool !== "text") setActiveTool("text");
-                }}
-                onPointerDown={(e) => handleTextPointerDown(e, overlay)}
-                onPointerMove={(e) => handleTextPointerMove(e, overlay.id)}
-                onPointerUp={handleTextPointerUp}
-                onPointerCancel={handleTextPointerUp}
-                style={{
-                  left: `${overlay.xNormalized * 100}%`,
-                  top: `${overlay.yNormalized * 100}%`,
-                  transform: `translate(-50%, -50%) scale(${overlay.scale}) rotate(${overlay.rotation}deg)`,
-                  opacity: overlay.opacity,
-                  color: overlay.color,
-                }}
-                className={`absolute pointer-events-auto select-none cursor-grab active:cursor-grabbing z-30 transition-shadow touch-none ${
-                  isSelected
-                    ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-black/40 rounded-xl p-2 bg-black/30 backdrop-blur-sm"
-                    : "p-1"
-                }`}
-              >
-                <div
-                  className={`${fontClass} whitespace-nowrap text-lg sm:text-2xl font-bold transition-all ${
-                    overlay.style === "background"
-                      ? "px-3 py-1 rounded-xl shadow-lg"
-                      : overlay.style === "outline"
-                      ? "drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]"
-                      : overlay.style === "shadow"
-                      ? "drop-shadow-[0_4px_12px_rgba(0,0,0,0.9)]"
-                      : ""
-                  }`}
-                  style={{
-                    backgroundColor:
-                      overlay.style === "background"
-                        ? overlay.bgColor || "rgba(0,0,0,0.75)"
-                        : "transparent",
-                  }}
-                >
-                  {overlay.text}
-                </div>
+          {/* Interactive Sticker Layers on Stage */}
+          {stickerOverlays.map((stickerItem) => (
+            <StickerCanvasLayer
+              key={stickerItem.id}
+              overlay={stickerItem}
+              isSelected={activeStickerId === stickerItem.id}
+              containerRef={imageContainerRef}
+              onSelect={(id) => {
+                setActiveStickerId(id);
+                if (activeTool !== "stickers") setActiveTool("stickers");
+              }}
+              onUpdate={handleUpdateStickerLayer}
+              onDelete={handleDeleteStickerLayer}
+              onDuplicate={handleDuplicateStickerLayer}
+              onBringForward={handleBringStickerForward}
+              onSendBackward={handleSendStickerBackward}
+            />
+          ))}
 
-                {/* Selected Overlay Action Controls Bar */}
-                {isSelected && (
-                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-xl p-1 shadow-2xl z-40">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTextOverlays((prev) =>
-                          prev.map((t) =>
-                            t.id === overlay.id ? { ...t, scale: Math.max(0.4, t.scale - 0.15) } : t
-                          )
-                        );
-                      }}
-                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-                      title="Decrease Size"
-                    >
-                      A-
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTextOverlays((prev) =>
-                          prev.map((t) =>
-                            t.id === overlay.id ? { ...t, scale: Math.min(3, t.scale + 0.15) } : t
-                          )
-                        );
-                      }}
-                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-                      title="Increase Size"
-                    >
-                      A+
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTextOverlays((prev) =>
-                          prev.map((t) =>
-                            t.id === overlay.id ? { ...t, rotation: (t.rotation + 90) % 360 } : t
-                          )
-                        );
-                      }}
-                      className="p-1 hover:bg-slate-800 text-slate-300 rounded-lg cursor-pointer"
-                      title="Rotate Text"
-                    >
-                      <RotateCw className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTextOverlays((prev) => prev.filter((t) => t.id !== overlay.id));
-                        setActiveTextId(null);
-                      }}
-                      className="p-1 hover:bg-rose-500/20 text-rose-400 rounded-lg cursor-pointer"
-                      title="Delete Text"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {/* Interactive Sticker Overlays on Stage */}
-          {stickerOverlays.map((stickerItem) => {
-            const isSelected = activeStickerId === stickerItem.id;
-            return (
-              <div
-                key={stickerItem.id}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveStickerId(stickerItem.id);
-                  if (activeTool !== "stickers") setActiveTool("stickers");
-                }}
-                onPointerDown={(e) => handleStickerPointerDown(e, stickerItem)}
-                onPointerMove={(e) => handleStickerPointerMove(e, stickerItem.id)}
-                onPointerUp={handleStickerPointerUp}
-                onPointerCancel={handleStickerPointerUp}
-                style={{
-                  left: `${stickerItem.xNormalized * 100}%`,
-                  top: `${stickerItem.yNormalized * 100}%`,
-                  transform: `translate(-50%, -50%) scale(${stickerItem.scale}) rotate(${stickerItem.rotation}deg)`,
-                }}
-                className={`absolute pointer-events-auto select-none cursor-grab active:cursor-grabbing z-30 transition-shadow touch-none ${
-                  isSelected
-                    ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-black/40 rounded-2xl p-1 bg-black/20 backdrop-blur-sm"
-                    : "p-1"
-                }`}
-              >
-                <div className="text-4xl sm:text-5xl drop-shadow-lg leading-none">
-                  {stickerItem.sticker}
-                </div>
-
-                {isSelected && (
-                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 backdrop-blur-md rounded-xl p-1 shadow-2xl z-40">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStickerOverlays((prev) =>
-                          prev.map((s) => (s.id === stickerItem.id ? { ...s, scale: Math.max(0.4, s.scale - 0.15) } : s))
-                        );
-                      }}
-                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-                      title="Decrease Size"
-                    >
-                      A-
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStickerOverlays((prev) =>
-                          prev.map((s) => (s.id === stickerItem.id ? { ...s, scale: Math.min(3, s.scale + 0.15) } : s))
-                        );
-                      }}
-                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-                      title="Increase Size"
-                    >
-                      A+
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStickerOverlays((prev) =>
-                          prev.map((s) => (s.id === stickerItem.id ? { ...s, rotation: (s.rotation + 90) % 360 } : s))
-                        );
-                      }}
-                      className="p-1 hover:bg-slate-800 text-slate-300 rounded-lg cursor-pointer"
-                      title="Rotate Sticker"
-                    >
-                      <RotateCw className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStickerOverlays((prev) => prev.filter((s) => s.id !== stickerItem.id));
-                        setActiveStickerId(null);
-                      }}
-                      className="p-1 hover:bg-rose-500/20 text-rose-400 rounded-lg cursor-pointer"
-                      title="Delete Sticker"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {/* Eraser Inpainting Interactive Mask Canvas Layer */}
+          {(activeTool === "eraser" || (activeTool === "adjust" && selectedAdjustment === "eraser")) && (
+            <EraserCanvasOverlay
+              containerRef={imageContainerRef}
+              strokes={eraserStrokes}
+              onStrokesChange={setEraserStrokes}
+              mode={eraserMode}
+              brushSize={eraserBrushSize}
+              brushSoftness={eraserBrushSoftness}
+              isActive={activeTool === "eraser" || (activeTool === "adjust" && selectedAdjustment === "eraser")}
+              rotation={rotation}
+              flipH={flipH}
+            />
+          )}
         </div>
       </div>
 
@@ -1557,11 +1514,31 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
                   {activeTool === "crop" && "Crop & Aspect"}
                   {activeTool === "filter" && "Filters"}
                   {activeTool === "text" && "Text Overlay"}
-                  {activeTool === "stickers" && "Stickers"}
+                  {activeTool === "stickers" && "Stickers & Graphics"}
+                  {activeTool === "eraser" && "Object Eraser"}
                 </span>
 
                 <div className="w-16" /> {/* Spacer to balance layout */}
               </div>
+
+              {/* OBJECT ERASER DEDICATED TOOL */}
+              {activeTool === "eraser" && (
+                <EraserControls
+                  mode={eraserMode}
+                  onModeChange={setEraserMode}
+                  brushSize={eraserBrushSize}
+                  onBrushSizeChange={setEraserBrushSize}
+                  brushSoftness={eraserBrushSoftness}
+                  onBrushSoftnessChange={setEraserBrushSoftness}
+                  strokes={eraserStrokes}
+                  onUndoStroke={() => setEraserStrokes((prev) => prev.slice(0, -1))}
+                  onClearStrokes={() => setEraserStrokes([])}
+                  onApplyErase={handleApplyIntelligentErase}
+                  isProcessing={isErasingWithAI}
+                  canUndoImage={urlHistory.length > 0}
+                  onUndoImage={handleUndo}
+                />
+              )}
 
               {/* ADJUSTMENTS INTERFACE */}
               {activeTool === "adjust" && (
@@ -1575,7 +1552,7 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
                         { id: "saturation", label: "Saturation", val: saturation },
                         { id: "warmth", label: "Temperature", val: warmth },
                         { id: "vignette", label: "Vignette", val: vignette },
-                        { id: "eraser", label: "AI Eraser", val: eraserPoints.length },
+                        { id: "eraser", label: "Object Eraser", val: eraserStrokes.length },
                       ].map((p) => (
                         <button
                           key={p.id}
@@ -1641,51 +1618,21 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
                       />
                     </div>
                   ) : (
-                    <div className="flex flex-col items-center gap-2 max-w-md mx-auto">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-slate-400 font-medium">Brush:</span>
-                        {[
-                          { label: "S", size: 20 },
-                          { label: "M", size: 35 },
-                          { label: "L", size: 55 },
-                        ].map((b) => (
-                          <button
-                            key={b.size}
-                            onClick={() => setEraserBrushSize(b.size)}
-                            className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                              eraserBrushSize === b.size
-                                ? "bg-pink-600 text-white"
-                                : "bg-slate-950 text-slate-400 hover:text-white"
-                            }`}
-                          >
-                            {b.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="flex items-center gap-2 pt-1">
-                        <button
-                          onClick={() => performAIErase()}
-                          disabled={eraserPoints.length === 0 || isErasingWithAI}
-                          className={`px-4 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                            eraserPoints.length > 0 && !isErasingWithAI
-                              ? "bg-gradient-to-r from-pink-600 to-indigo-600 text-white shadow-md shadow-pink-600/30"
-                              : "bg-slate-800 text-slate-500 cursor-not-allowed"
-                          }`}
-                        >
-                          <Wand2 className="w-3.5 h-3.5 text-amber-300" />
-                          <span>Erase Masked ({eraserPoints.length})</span>
-                        </button>
-                        {eraserPoints.length > 0 && (
-                          <button
-                            onClick={() => setEraserPoints([])}
-                            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs cursor-pointer"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                    </div>
+                    <EraserControls
+                      mode={eraserMode}
+                      onModeChange={setEraserMode}
+                      brushSize={eraserBrushSize}
+                      onBrushSizeChange={setEraserBrushSize}
+                      brushSoftness={eraserBrushSoftness}
+                      onBrushSoftnessChange={setEraserBrushSoftness}
+                      strokes={eraserStrokes}
+                      onUndoStroke={() => setEraserStrokes((prev) => prev.slice(0, -1))}
+                      onClearStrokes={() => setEraserStrokes([])}
+                      onApplyErase={handleApplyIntelligentErase}
+                      isProcessing={isErasingWithAI}
+                      canUndoImage={urlHistory.length > 0}
+                      onUndoImage={handleUndo}
+                    />
                   )}
                 </div>
               )}
@@ -1763,177 +1710,61 @@ export const PhotoEditorModal = forwardRef<PhotoEditorRef, PhotoEditorModalProps
 
               {/* TEXT INTERFACE */}
               {activeTool === "text" && (
-                <div className="flex flex-col gap-3 w-full max-w-xl mx-auto">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        haptics.selection();
-                        const newOverlay: TextOverlay = {
-                          id: `text-${Date.now()}`,
-                          text: "Sample Text",
-                          xNormalized: 0.5,
-                          yNormalized: 0.5,
-                          scale: 1,
-                          rotation: 0,
-                          fontFamily: "sans",
-                          color: "#ffffff",
-                          opacity: 1,
-                          alignment: "center",
-                          style: "shadow",
-                          bgColor: "#000000",
-                        };
-                        setTextOverlays((prev) => [...prev, newOverlay]);
-                        setActiveTextId(newOverlay.id);
-                      }}
-                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer active:scale-95"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span>Add Text</span>
-                    </button>
-
-                    {activeTextId && (
-                      <input
-                        type="text"
-                        value={textOverlays.find((t) => t.id === activeTextId)?.text || ""}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setTextOverlays((prev) =>
-                            prev.map((t) => (t.id === activeTextId ? { ...t, text: val } : t))
-                          );
-                        }}
-                        placeholder="Type text here..."
-                        className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-slate-100 focus:outline-none focus:border-indigo-500"
-                      />
-                    )}
-                  </div>
-
-                  {/* Font & Style options */}
-                  {activeTextId && (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-                        {[
-                          { id: "sans", label: "Sans", fontClass: "font-sans" },
-                          { id: "serif", label: "Serif", fontClass: "font-serif" },
-                          { id: "display", label: "Display", fontClass: "font-black uppercase tracking-wider" },
-                          { id: "script", label: "Script", fontClass: "font-serif italic" },
-                          { id: "mono", label: "Mono", fontClass: "font-mono" },
-                        ].map((f) => {
-                          const activeItem = textOverlays.find((t) => t.id === activeTextId);
-                          const isSel = activeItem?.fontFamily === f.id;
-                          return (
-                            <button
-                              key={f.id}
-                              onClick={() =>
-                                setTextOverlays((prev) =>
-                                  prev.map((t) =>
-                                    t.id === activeTextId ? { ...t, fontFamily: f.id as any } : t
-                                  )
-                                )
-                              }
-                              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shrink-0 ${f.fontClass} ${
-                                isSel
-                                  ? "bg-indigo-600 text-white border-indigo-400"
-                                  : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
-                              }`}
-                            >
-                              {f.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5">
-                          {["#ffffff", "#000000", "#f87171", "#fbbf24", "#34d399", "#60a5fa", "#c084fc", "#f472b6"].map((color) => {
-                            const activeItem = textOverlays.find((t) => t.id === activeTextId);
-                            const isSel = activeItem?.color === color;
-                            return (
-                              <button
-                                key={color}
-                                onClick={() =>
-                                  setTextOverlays((prev) =>
-                                    prev.map((t) => (t.id === activeTextId ? { ...t, color } : t))
-                                  )
-                                }
-                                style={{ backgroundColor: color }}
-                                className={`w-6 h-6 rounded-full border border-white/20 transition-transform cursor-pointer ${
-                                  isSel ? "scale-125 ring-2 ring-indigo-400" : "hover:scale-110"
-                                }`}
-                              />
-                            );
-                          })}
-                        </div>
-
-                        <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                          {[
-                            { id: "normal", label: "Plain" },
-                            { id: "shadow", label: "Shadow" },
-                            { id: "outline", label: "Outline" },
-                            { id: "background", label: "Badge" },
-                          ].map((st) => {
-                            const activeItem = textOverlays.find((t) => t.id === activeTextId);
-                            const isSel = activeItem?.style === st.id;
-                            return (
-                              <button
-                                key={st.id}
-                                onClick={() =>
-                                  setTextOverlays((prev) =>
-                                    prev.map((t) => (t.id === activeTextId ? { ...t, style: st.id as any } : t))
-                                  )
-                                }
-                                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
-                                  isSel ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
-                                }`}
-                              >
-                                {st.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <TextEditorBottomBar
+                  selectedOverlay={textOverlays.find((t) => t.id === activeTextId) || null}
+                  allOverlays={textOverlays}
+                  onAddText={handleAddText}
+                  onUpdateSelected={(partial) => {
+                    if (activeTextId) handleUpdateTextLayer(activeTextId, partial);
+                  }}
+                  onDeleteSelected={() => {
+                    if (activeTextId) handleDeleteTextLayer(activeTextId);
+                  }}
+                  onDuplicateSelected={() => {
+                    if (activeTextId) handleDuplicateTextLayer(activeTextId);
+                  }}
+                  onStartInlineEdit={() => {
+                    if (activeTextId) handleStartInlineEdit(activeTextId);
+                  }}
+                  onSelectOverlay={(id) => setActiveTextId(id)}
+                />
               )}
 
               {/* STICKERS INTERFACE */}
               {activeTool === "stickers" && (
-                <div className="space-y-2 max-w-xl mx-auto">
-                  <p className="text-[11px] text-slate-400 text-center font-medium">
-                    Tap a sticker to add it to your photo
-                  </p>
-                  <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none justify-start sm:justify-center">
-                    {[
-                      "✨", "❤️", "🔥", "😎", "⭐", "🎉", "🌈", "🌸", "👑", "🚀",
-                      "💡", "🎨", "📸", "☀️", "🌴", "☕", "🏆", "💯", "✌️", "🍀"
-                    ].map((stickerEmoji) => (
-                      <button
-                        key={stickerEmoji}
-                        onClick={() => {
-                          haptics.selection();
-                          const newSticker: StickerOverlay = {
-                            id: `sticker-${Date.now()}`,
-                            sticker: stickerEmoji,
-                            xNormalized: 0.5,
-                            yNormalized: 0.5,
-                            scale: 1,
-                            rotation: 0,
-                          };
-                          setStickerOverlays((prev) => [...prev, newSticker]);
-                          setActiveStickerId(newSticker.id);
-                        }}
-                        className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500 hover:bg-slate-800/80 text-2xl flex items-center justify-center transition-all cursor-pointer active:scale-90 shrink-0"
-                      >
-                        {stickerEmoji}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <StickerEditorBottomBar
+                  selectedSticker={stickerOverlays.find((s) => s.id === activeStickerId) || null}
+                  allStickers={stickerOverlays}
+                  onAddSticker={handleAddStickerGraphic}
+                  onAddGallerySticker={handleAddGallerySticker}
+                  onUpdateSelected={(partial) => {
+                    if (activeStickerId) handleUpdateStickerLayer(activeStickerId, partial);
+                  }}
+                  onDeleteSelected={() => {
+                    if (activeStickerId) handleDeleteStickerLayer(activeStickerId);
+                  }}
+                  onDuplicateSelected={() => {
+                    if (activeStickerId) handleDuplicateStickerLayer(activeStickerId);
+                  }}
+                  onBringForward={() => handleBringStickerForward(activeStickerId || undefined)}
+                  onSendBackward={() => handleSendStickerBackward(activeStickerId || undefined)}
+                  onBringToFront={handleBringStickerToFront}
+                  onSendToBack={handleSendStickerToBack}
+                  onSelectSticker={(id) => setActiveStickerId(id)}
+                />
               )}
             </motion.div>
           )}
         </AnimatePresence>
       </div>
+
+      {/* Inline Text Edit Overlay Modal */}
+      <InlineTextEditModal
+        isOpen={isEditingInlineText}
+        initialText={textOverlays.find((t) => t.id === activeTextId)?.text || ""}
+        onCommit={handleCommitInlineText}
+        onCancel={handleCancelInlineText}
+      />
 
       {/* Discard Changes Confirmation Modal */}
       {showDiscardConfirmModal && (

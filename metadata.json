@@ -1,7 +1,10 @@
 {
   "name": "Remix Galleyar",
   "description": "Smart AI-powered photos and video gallery with Apple \u0026 Samsung inspired design, natural language search, auto face \u0026 scene tagging, OCR, memory stories, pro editor, and cloud backup capabilities.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

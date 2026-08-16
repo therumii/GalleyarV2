@@ -31,10 +31,13 @@ import {
   KeyRound,
   ChevronRight,
   ArrowLeft,
+  Smartphone,
+  HardDrive,
 } from "lucide-react";
 import { GridDensity, SortByOption, SortOrderOption, TimelineZoom, ViewMode } from "../types";
 import { isPinConfigured } from "../utils/cryptoVault";
 import { VaultPinModal } from "./VaultPinModal";
+import { AppLogo } from "./AppLogo";
 import { haptics } from "../utils/haptics";
 
 interface HeaderProps {
@@ -63,6 +66,7 @@ interface HeaderProps {
   onOpenAddToAlbumModal?: () => void;
   onToggleSidebar: () => void;
   onOpenUploadModal: () => void;
+  onOpenDeviceSyncModal?: () => void;
   isSettingsOpenProp?: boolean;
   onToggleSettings?: (show: boolean) => void;
 }
@@ -98,6 +102,7 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
   onOpenAddToAlbumModal,
   onToggleSidebar,
   onOpenUploadModal,
+  onOpenDeviceSyncModal,
   isSettingsOpenProp,
   onToggleSettings,
 }, ref) => {
@@ -112,7 +117,7 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  type SettingsSubTab = "overview" | "sort" | "grid" | "haptics" | "vault" | "info";
+  type SettingsSubTab = "overview" | "sort" | "grid" | "haptics" | "vault" | "storage" | "info";
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("overview");
 
   // Draft settings state (separate draft vs saved settings)
@@ -565,11 +570,22 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                 </div>
               )}
 
-              {/* Upload Button */}
+              {/* Upload & Phone Media Buttons */}
+              {onOpenDeviceSyncModal && (
+                <button
+                  onClick={onOpenDeviceSyncModal}
+                  className="p-2 rounded-xl bg-slate-800/90 text-indigo-300 hover:bg-slate-750 border border-indigo-500/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Load Real Photos & Videos from Phone Storage / APK"
+                >
+                  <Smartphone className="w-4 h-4 text-indigo-400" />
+                  <span className="hidden xl:inline text-xs font-semibold">Phone Media</span>
+                </button>
+              )}
+
               <button
                 onClick={onOpenUploadModal}
                 className="p-2 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 transition-all flex items-center gap-1.5 cursor-pointer"
-                title="Upload Photos"
+                title="Upload Photos & Videos"
               >
                 <Upload className="w-4 h-4 text-indigo-400" />
                 <span className="hidden md:inline text-xs font-semibold">Upload</span>
@@ -810,7 +826,32 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                       </div>
                     </button>
 
-                    {/* 5. Engine & AI Info */}
+                    {/* 5. Phone Media & Storage */}
+                    <button
+                      type="button"
+                      onClick={() => setSettingsSubTab("storage")}
+                      className="w-full text-left p-3 rounded-xl bg-slate-950/70 hover:bg-slate-800/80 border border-slate-800/80 hover:border-emerald-500/50 transition-all cursor-pointer group flex items-center justify-between gap-3 shadow-sm"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shrink-0 group-hover:bg-emerald-500/20 transition-all">
+                          <Smartphone className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-200 group-hover:text-white transition-colors">
+                            Phone Media & APK Storage
+                          </div>
+                          <p className="text-[11px] text-slate-400 truncate">Device sync, camera roll & storage</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                          IndexedDB
+                        </span>
+                        <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-transform group-hover:translate-x-0.5" />
+                      </div>
+                    </button>
+
+                    {/* 6. Engine & AI Info */}
                     <button
                       type="button"
                       onClick={() => setSettingsSubTab("info")}
@@ -1083,9 +1124,55 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                   </div>
                 )}
 
-                {/* Sub-Tab 5: App Info & AI Engine */}
+                {/* Sub-Tab 5: Phone Media & Storage */}
+                {settingsSubTab === "storage" && (
+                  <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-0.5 animate-fade-in">
+                    <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 space-y-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                          <Smartphone className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-slate-100">Phone Storage & APK Media</div>
+                          <p className="text-[11px] text-slate-400">
+                            High-capacity IndexedDB offline engine
+                          </p>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        Galleyar stores high-resolution photos and video files in an offline device database with no size limits, keeping your personal media fast and accessible without internet.
+                      </p>
+
+                      {onOpenDeviceSyncModal && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleToggleSettingsModal(false);
+                            onOpenDeviceSyncModal();
+                          }}
+                          className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md shadow-emerald-600/30"
+                        >
+                          <Smartphone className="w-4 h-4" />
+                          <span>Launch Phone Media & APK Scanner</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Sub-Tab 6: App Info & AI Engine */}
                 {settingsSubTab === "info" && (
                   <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-0.5 animate-fade-in">
+                    {/* App Identity Banner */}
+                    <div className="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800/80 flex items-center gap-3">
+                      <AppLogo size="md" glow={true} />
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-100">Galleyar AI Gallery</h4>
+                        <p className="text-[11px] text-slate-400">Version 2.4.0 • Modern Photo & Video Engine</p>
+                      </div>
+                    </div>
+
                     <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 space-y-2">
                       <div className="flex items-center gap-2 text-xs font-bold text-purple-300">
                         <Sparkles className="w-4 h-4 text-purple-400" />

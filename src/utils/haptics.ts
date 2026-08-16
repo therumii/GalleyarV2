@@ -64,9 +64,23 @@ class HapticsService {
     this.vibrate(30);
   }
 
+  /** Impact feedback helper */
+  public impact(style: "light" | "medium" | "heavy" = "medium"): void {
+    if (style === "light") this.light();
+    else if (style === "heavy") this.heavy();
+    else this.medium();
+  }
+
   /** Success confirmation pattern (e.g. save complete, unlock vault, export success) */
   public success(): void {
     this.vibrate([10, 35, 15]);
+  }
+
+  /** Notification feedback helper */
+  public notification(type: "success" | "warning" | "error" = "success"): void {
+    if (type === "warning") this.warning();
+    else if (type === "error") this.error();
+    else this.success();
   }
 
   /** Warning pattern (e.g. edge boundary hit, delete confirmation) */
