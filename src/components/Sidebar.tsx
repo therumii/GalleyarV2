@@ -168,16 +168,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <Plus className="w-4 h-4" />
             <span>Upload Media</span>
           </button>
-
-          {onOpenDeviceSync && (
-            <button
-              onClick={onOpenDeviceSync}
-              className="w-full py-2 px-3.5 rounded-2xl bg-slate-800/90 hover:bg-slate-750 active:scale-[0.98] text-indigo-300 border border-indigo-500/30 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer"
-            >
-              <Smartphone className="w-4 h-4 text-indigo-400" />
-              <span>📱 Load Phone Media</span>
-            </button>
-          )}
         </div>
       </div>
 

@@ -143,11 +143,11 @@ export async function processImageFile(file: File): Promise<{
 
         const dateObj = file.lastModified ? new Date(file.lastModified) : new Date();
         const dateIso = dateObj.toISOString();
-        const cleanTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+        const realTitle = file.name || "Photo";
 
         const photo: Photo = {
           id: `device-photo-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-          title: cleanTitle || "Phone Photo",
+          title: realTitle,
           url: thumbDataUrl,
           highResUrl: objectUrl,
           isVideo: false,
@@ -161,22 +161,11 @@ export async function processImageFile(file: File): Promise<{
           isHidden: false,
           cloudStatus: "local_only",
           fileSize: formatBytes(file.size),
-          resolution: `${naturalWidth} x ${naturalHeight}`,
-          exif: {
-            camera: "Phone Camera",
-            aperture: "f/1.9",
-            iso: 125,
-            shutterSpeed: "1/120s",
-          },
-          camera: "Phone Camera",
-          location: {
-            name: "Device Storage",
-            city: "Local Device",
-            country: "Mobile Storage",
-            lat: 0,
-            lng: 0,
-          },
-          tags: ["device media", "camera roll", file.type.split("/")[1] || "image"],
+          resolution: `${naturalWidth} × ${naturalHeight}`,
+          camera: undefined,
+          exif: undefined,
+          location: undefined,
+          tags: ["device media", file.type.split("/")[1] || "image"].filter(Boolean),
           people: [],
           dominantColors,
         };
@@ -279,11 +268,11 @@ export async function processVideoFile(file: File): Promise<{
 
         const dateObj = file.lastModified ? new Date(file.lastModified) : new Date();
         const dateIso = dateObj.toISOString();
-        const cleanTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+        const realTitle = file.name || "Video";
 
         const photo: Photo = {
           id: `device-video-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-          title: cleanTitle || "Phone Video",
+          title: realTitle,
           url: posterDataUrl || objectUrl,
           highResUrl: posterDataUrl || objectUrl,
           isVideo: true,
@@ -299,22 +288,11 @@ export async function processVideoFile(file: File): Promise<{
           isHidden: false,
           cloudStatus: "local_only",
           fileSize: formatBytes(file.size),
-          resolution: `${naturalWidth} x ${naturalHeight}`,
-          exif: {
-            camera: "Phone Video Camera",
-            aperture: "f/1.8",
-            iso: 160,
-            shutterSpeed: "1/60s",
-          },
-          camera: "Phone Video Camera",
-          location: {
-            name: "Device Storage",
-            city: "Local Device",
-            country: "Mobile Storage",
-            lat: 0,
-            lng: 0,
-          },
-          tags: ["device media", "video", "mobile capture"],
+          resolution: `${naturalWidth} × ${naturalHeight}`,
+          camera: undefined,
+          exif: undefined,
+          location: undefined,
+          tags: ["device media", "video", file.type.split("/")[1] || "mp4"].filter(Boolean),
           people: [],
           dominantColors,
         };
@@ -332,16 +310,16 @@ export async function processVideoFile(file: File): Promise<{
 
 function createFallbackVideoPhoto(file: File, objectUrl: string): { photo: Photo; blob: Blob } {
   const dateObj = file.lastModified ? new Date(file.lastModified) : new Date();
-  const cleanTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+  const realTitle = file.name || "Video";
 
   const photo: Photo = {
     id: `device-video-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-    title: cleanTitle || "Phone Video",
+    title: realTitle,
     url: objectUrl,
     highResUrl: objectUrl,
     isVideo: true,
     videoUrl: objectUrl,
-    duration: "0:30",
+    duration: undefined,
     date: dateObj.toISOString(),
     year: dateObj.getFullYear(),
     month: dateObj.toLocaleString("en-US", { month: "long", year: "numeric" }),
@@ -352,21 +330,10 @@ function createFallbackVideoPhoto(file: File, objectUrl: string): { photo: Photo
     isHidden: false,
     cloudStatus: "local_only",
     fileSize: formatBytes(file.size),
-    resolution: "1920 x 1080",
-    exif: {
-      camera: "Phone Video Camera",
-      aperture: "f/1.8",
-      iso: 160,
-      shutterSpeed: "1/60s",
-    },
-    camera: "Phone Video Camera",
-    location: {
-      name: "Device Storage",
-      city: "Local Device",
-      country: "Mobile Storage",
-      lat: 0,
-      lng: 0,
-    },
+    resolution: "Unknown",
+    camera: undefined,
+    exif: undefined,
+    location: undefined,
     tags: ["device media", "video"],
     people: [],
     dominantColors: ["#1e1b4b", "#0f172a"],

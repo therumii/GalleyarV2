@@ -940,15 +940,39 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
               </h4>
               <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 space-y-3">
                 <div>
-                  <p className="text-[10px] text-slate-400">Title</p>
-                  <p className="text-xs font-semibold text-slate-200">
-                    {photo.title}
+                  <p className="text-[10px] text-slate-400">File Name</p>
+                  <p className="text-xs font-semibold text-slate-200 break-all">
+                    {photo.title || "Untitled Media"}
                   </p>
                 </div>
                 {photo.date && (
                   <div className="flex items-center gap-2 text-xs text-slate-300">
                     <Calendar className="w-4 h-4 text-slate-400" />
-                    <span>{photo.date}</span>
+                    <span>
+                      {(() => {
+                        try {
+                          const d = new Date(photo.date);
+                          if (!isNaN(d.getTime())) {
+                            return d.toLocaleString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            });
+                          }
+                          return photo.date;
+                        } catch {
+                          return photo.date;
+                        }
+                      })()}
+                    </span>
+                  </div>
+                )}
+                {photo.fileSize && photo.fileSize !== "Unknown" && (
+                  <div className="flex items-center justify-between text-xs text-slate-300">
+                    <span className="text-slate-400">File Size:</span>
+                    <span className="font-medium">{photo.fileSize}</span>
                   </div>
                 )}
                 {photo.location && (
@@ -975,19 +999,33 @@ export const MediaViewer = forwardRef<MediaViewerRef, MediaViewerProps>(({
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Device:</span>
                   <span className="font-medium">
-                    {photo.camera || "GalleyAR High-Res Camera"}
+                    {photo.camera || photo.exif?.camera || "Not available"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Resolution:</span>
-                  <span className="font-medium">3840 × 2160 Ultra HD</span>
+                  <span className="font-medium">
+                    {photo.resolution || "Unknown"}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Type:</span>
                   <span className="font-medium">
-                    {photo.isVideo ? "Video (MP4)" : "Photo (JPEG)"}
+                    {photo.isVideo ? (photo.duration ? `Video (${photo.duration})` : "Video") : "Photo"}
                   </span>
                 </div>
+                {photo.exif?.aperture && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Aperture:</span>
+                    <span className="font-medium">{photo.exif.aperture}</span>
+                  </div>
+                )}
+                {photo.exif?.iso && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">ISO:</span>
+                    <span className="font-medium">{photo.exif.iso}</span>
+                  </div>
+                )}
               </div>
             </div>
 

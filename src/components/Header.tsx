@@ -570,22 +570,10 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                 </div>
               )}
 
-              {/* Upload & Phone Media Buttons */}
-              {onOpenDeviceSyncModal && (
-                <button
-                  onClick={onOpenDeviceSyncModal}
-                  className="p-2 rounded-xl bg-slate-800/90 text-indigo-300 hover:bg-slate-750 border border-indigo-500/30 transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="Load Real Photos & Videos from Phone Storage / APK"
-                >
-                  <Smartphone className="w-4 h-4 text-indigo-400" />
-                  <span className="hidden xl:inline text-xs font-semibold">Phone Media</span>
-                </button>
-              )}
-
               <button
                 onClick={onOpenUploadModal}
                 className="p-2 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 transition-all flex items-center gap-1.5 cursor-pointer"
-                title="Upload Photos & Videos"
+                title="Add Media to Gallery"
               >
                 <Upload className="w-4 h-4 text-indigo-400" />
                 <span className="hidden md:inline text-xs font-semibold">Upload</span>
@@ -826,7 +814,7 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                       </div>
                     </button>
 
-                    {/* 5. Phone Media & Storage */}
+                    {/* 5. Android MediaStore & Storage */}
                     <button
                       type="button"
                       onClick={() => setSettingsSubTab("storage")}
@@ -838,14 +826,14 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                         </div>
                         <div className="min-w-0">
                           <div className="text-xs font-bold text-slate-200 group-hover:text-white transition-colors">
-                            Phone Media & APK Storage
+                            Android MediaStore & Storage
                           </div>
-                          <p className="text-[11px] text-slate-400 truncate">Device sync, camera roll & storage</p>
+                          <p className="text-[11px] text-slate-400 truncate">Device photo library & permissions</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                          IndexedDB
+                          MediaStore
                         </span>
                         <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-transform group-hover:translate-x-0.5" />
                       </div>
@@ -1124,7 +1112,7 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                   </div>
                 )}
 
-                {/* Sub-Tab 5: Phone Media & Storage */}
+                {/* Sub-Tab 5: Android MediaStore & Storage */}
                 {settingsSubTab === "storage" && (
                   <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-0.5 animate-fade-in">
                     <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 space-y-3">
@@ -1133,30 +1121,27 @@ export const Header = forwardRef<HeaderRef, HeaderProps>(({
                           <Smartphone className="w-4 h-4" />
                         </div>
                         <div>
-                          <div className="text-xs font-bold text-slate-100">Phone Storage & APK Media</div>
+                          <div className="text-xs font-bold text-slate-100">Android MediaStore Integration</div>
                           <p className="text-[11px] text-slate-400">
-                            High-capacity IndexedDB offline engine
+                            Direct content URI query & system sync
                           </p>
                         </div>
                       </div>
 
                       <p className="text-[11px] text-slate-400 leading-relaxed">
-                        Galleyar stores high-resolution photos and video files in an offline device database with no size limits, keeping your personal media fast and accessible without internet.
+                        Galleyar directly queries Android MediaStore to provide an instant, zero-copy gallery for your device photos and videos. Media is kept in its native storage without duplicate file copies.
                       </p>
 
-                      {onOpenDeviceSyncModal && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleToggleSettingsModal(false);
-                            onOpenDeviceSyncModal();
-                          }}
-                          className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md shadow-emerald-600/30"
-                        >
-                          <Smartphone className="w-4 h-4" />
-                          <span>Launch Phone Media & APK Scanner</span>
-                        </button>
-                      )}
+                      <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-[11px] space-y-1.5">
+                        <div className="flex justify-between text-slate-300">
+                          <span className="text-slate-400">Permission:</span>
+                          <span className="text-emerald-400 font-semibold">READ_MEDIA_VISUAL</span>
+                        </div>
+                        <div className="flex justify-between text-slate-300">
+                          <span className="text-slate-400">Architecture:</span>
+                          <span className="text-slate-200">Native MediaStore</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}

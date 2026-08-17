@@ -145,15 +145,16 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
     const isVideoFile = selectedFile?.type.startsWith("video/") || false;
     const nowIso = new Date().toISOString();
+    const cleanTitle = titleInput.trim() || selectedFile?.name || (isVideoFile ? "Video" : "Photo");
 
     const newPhoto: Photo = {
       id: `photo-${Date.now()}`,
-      title: titleInput.trim() || (isVideoFile ? "Phone Video" : "Phone Photo"),
+      title: cleanTitle,
       url: previewUrl,
       highResUrl: previewUrl,
       isVideo: isVideoFile,
       videoUrl: isVideoFile ? previewUrl : undefined,
-      duration: isVideoFile ? (videoDurationStr || "0:15") : undefined,
+      duration: isVideoFile ? videoDurationStr : undefined,
       date: nowIso,
       year: new Date().getFullYear(),
       month: new Date().toLocaleString("en-US", { month: "long", year: "numeric" }),
@@ -163,22 +164,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       isTrash: false,
       isHidden: false,
       cloudStatus: "local_only",
-      fileSize: selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : "2.4 MB",
-      resolution: "3840 x 2160",
-      exif: {
-        camera: "Phone Camera",
-        aperture: "f/1.8",
-        iso: 100,
-        shutterSpeed: "1/200s",
-      },
-      location: {
-        name: "Device Storage",
-        city: "Local Device",
-        country: "Mobile Storage",
-        lat: 0,
-        lng: 0,
-      },
-      tags: aiAnalysisResult?.tags || ["phone media", "uploaded"],
+      fileSize: selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : "Unknown",
+      resolution: isVideoFile ? "1920 × 1080" : "Original Resolution",
+      camera: undefined,
+      exif: undefined,
+      location: undefined,
+      tags: aiAnalysisResult?.tags || ["uploaded", isVideoFile ? "video" : "photo"],
       people: aiAnalysisResult?.facesDetected
         ? aiAnalysisResult.facesDetected.map((f: any, idx: number) => ({
             id: `person-up-${idx}`,
